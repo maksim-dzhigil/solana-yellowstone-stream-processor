@@ -1,0 +1,13 @@
+[package]
+name = "solana-yellowstone-storage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+solana-yellowstone-domain = { path = "../domain" }
+
+[lints]
+workspace = true

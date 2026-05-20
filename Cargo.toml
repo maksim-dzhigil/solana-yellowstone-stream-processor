@@ -1,0 +1,17 @@
+[workspace]
+members = [
+    "crates/app",
+    "crates/domain",
+    "crates/storage",
+    "crates/stream",
+]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "UNLICENSED"
+repository = "https://github.com/maksim-dzhigil/solana-yellowstone-stream-processor"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
