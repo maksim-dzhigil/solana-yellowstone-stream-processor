@@ -78,4 +78,4 @@ Note: the current binary starts a skeleton replay-mode app and prints a redacted
 ## Documentation
 
 - [MOTIVATION.md](MOTIVATION.md) - project motivation and value.
-- [CHANGELOG.md](CHANGELOG.md) - project change log.
+- [LOGBOOK.md](LOGBOOK.md) - project logs.
