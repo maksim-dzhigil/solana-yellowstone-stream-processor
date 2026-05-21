@@ -14,7 +14,7 @@ test:
 	cargo test --workspace
 
 test-postgres:
-	TEST_DATABASE_URL='$(TEST_DATABASE_URL)' cargo test -p solana-yellowstone-storage postgres::tests::writes_and_deduplicates_events_in_postgres -- --ignored --exact
+	TEST_DATABASE_URL='$(TEST_DATABASE_URL)' cargo test -p solana-yellowstone-storage -- --ignored
 
 clippy:
 	cargo clippy --workspace --all-targets -- -D warnings

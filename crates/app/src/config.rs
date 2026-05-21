@@ -6,6 +6,7 @@ pub struct Config {
     pub http_addr: String,
     pub rust_log: String,
     pub replay_path: String,
+    pub stream_name: String,
     pub batch_size: usize,
     pub channel_capacity: usize,
 }
@@ -25,6 +26,7 @@ impl Config {
             http_addr: env_or_default(source, "HTTP_ADDR", "127.0.0.1:8080")?,
             rust_log: env_or_default(source, "RUST_LOG", "info")?,
             replay_path: env_or_default(source, "REPLAY_PATH", "fixtures/sample_stream.jsonl")?,
+            stream_name: env_or_default(source, "STREAM_NAME", "replay")?,
             batch_size: env_positive_usize_or_default(source, "STREAM_BATCH_SIZE", 500)?,
             channel_capacity: env_positive_usize_or_default(
                 source,
@@ -36,9 +38,10 @@ impl Config {
 
     pub fn redacted_summary(&self) -> String {
         format!(
-            "http_addr={}; replay_path={}; batch_size={}; channel_capacity={}; database_url_configured={}",
+            "http_addr={}; replay_path={}; stream_name={}; batch_size={}; channel_capacity={}; database_url_configured={}",
             self.http_addr,
             self.replay_path,
+            self.stream_name,
             self.batch_size,
             self.channel_capacity,
             !self.database_url.is_empty()
@@ -124,6 +127,7 @@ mod tests {
 
         assert_eq!(config.http_addr, "127.0.0.1:8080");
         assert_eq!(config.replay_path, "fixtures/sample_stream.jsonl");
+        assert_eq!(config.stream_name, "replay");
         assert_eq!(config.batch_size, 500);
         assert_eq!(config.channel_capacity, 10_000);
     }
@@ -133,6 +137,7 @@ mod tests {
         let source = FakeEnv::default()
             .with("HTTP_ADDR", "0.0.0.0:9000")
             .with("REPLAY_PATH", "fixtures/custom.jsonl")
+            .with("STREAM_NAME", "custom-replay")
             .with("STREAM_BATCH_SIZE", "42")
             .with("STREAM_CHANNEL_CAPACITY", "2048");
 
@@ -140,6 +145,7 @@ mod tests {
 
         assert_eq!(config.http_addr, "0.0.0.0:9000");
         assert_eq!(config.replay_path, "fixtures/custom.jsonl");
+        assert_eq!(config.stream_name, "custom-replay");
         assert_eq!(config.batch_size, 42);
         assert_eq!(config.channel_capacity, 2048);
     }

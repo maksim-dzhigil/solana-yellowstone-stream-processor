@@ -18,6 +18,17 @@ pub trait EventWriter {
     async fn write_batch(&self, events: &[NormalizedEvent]) -> Result<WriteSummary, Self::Error>;
 }
 
+#[async_trait]
+pub trait CursorStore {
+    type Error;
+
+    async fn update_after_batch(
+        &self,
+        stream_name: &str,
+        last_persisted_slot: u64,
+    ) -> Result<(), Self::Error>;
+}
+
 impl std::ops::AddAssign for WriteSummary {
     fn add_assign(&mut self, rhs: Self) {
         self.attempted += rhs.attempted;

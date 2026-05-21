@@ -4,7 +4,7 @@ mod http;
 mod telemetry;
 
 use config::Config;
-use solana_yellowstone_storage::postgres::PostgresEventWriter;
+use solana_yellowstone_storage::{cursor::PostgresCursorStore, postgres::PostgresEventWriter};
 use solana_yellowstone_stream::pipeline::{PipelineConfig, run_replay_pipeline};
 use solana_yellowstone_stream::replay::ReplaySource;
 
@@ -32,20 +32,28 @@ async fn main() {
             eprintln!("postgres error: {err}");
             std::process::exit(4);
         });
-    let summary = run_replay_pipeline(events, &writer, pipeline_config)
-        .await
-        .unwrap_or_else(|err| {
-            eprintln!("pipeline error: {err}");
-            std::process::exit(5);
-        });
+    let cursor_store = PostgresCursorStore::from_pool(writer.pool().clone());
+    let summary = run_replay_pipeline(
+        events,
+        &writer,
+        &cursor_store,
+        &config.stream_name,
+        pipeline_config,
+    )
+    .await
+    .unwrap_or_else(|err| {
+        eprintln!("pipeline error: {err}");
+        std::process::exit(5);
+    });
 
     println!(
-        "solana-yellowstone-stream-processor completed replay pipeline; {}; events_seen={}; batches_written={}; events_attempted={}; events_inserted={}; events_deduplicated={}",
+        "solana-yellowstone-stream-processor completed replay pipeline; {}; events_seen={}; batches_written={}; events_attempted={}; events_inserted={}; events_deduplicated={}; last_persisted_slot={:?}",
         config.redacted_summary(),
         summary.events_seen,
         summary.batches_written,
         summary.write_summary.attempted,
         summary.write_summary.inserted,
         summary.write_summary.deduplicated,
+        summary.last_persisted_slot,
     );
 }
