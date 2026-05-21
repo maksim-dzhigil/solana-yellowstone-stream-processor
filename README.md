@@ -46,6 +46,13 @@ flowchart LR
 Current local workflow:
 
 ```bash
+make check
+make run
+```
+
+Equivalent direct commands:
+
+```bash
 cargo build --workspace
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
@@ -74,6 +81,21 @@ GET /metrics
 ```
 
 Note: the current binary starts a skeleton replay-mode app and prints a redacted configuration summary. Full replay ingestion is not implemented yet.
+
+## Commit Style
+
+Use Conventional Commits for readable project history:
+
+```text
+feat: add replay reader
+fix: reject invalid batch size config
+docs: update local run instructions
+test: add duplicate replay test
+chore: add baseline developer workflow
+refactor: split cursor storage module
+```
+
+Prefer one logical change per commit.
 
 ## Documentation
 
