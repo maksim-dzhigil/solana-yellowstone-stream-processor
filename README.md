@@ -59,7 +59,13 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo run -p solana-yellowstone-stream-processor
 ```
 
-Target replay workflow after CLI parsing lands:
+The app currently reads `REPLAY_PATH`, defaulting to `fixtures/sample_stream.jsonl`. Override it with:
+
+```bash
+REPLAY_PATH=fixtures/sample_stream.jsonl cargo run -p solana-yellowstone-stream-processor
+```
+
+Target CLI workflow after argument parsing lands:
 
 ```bash
 cargo run -p solana-yellowstone-stream-processor -- --replay fixtures/sample_stream.jsonl
@@ -80,7 +86,7 @@ GET /status
 GET /metrics
 ```
 
-Note: the current binary starts a skeleton replay-mode app and prints a redacted configuration summary. Full replay ingestion is not implemented yet.
+Note: the current binary reads the configured JSONL replay file and prints a redacted configuration summary plus the number of loaded events. Batching, storage, and HTTP endpoints are not implemented yet.
 
 ## Commit Style
 

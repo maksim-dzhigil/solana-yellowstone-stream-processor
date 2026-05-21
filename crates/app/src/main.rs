@@ -14,11 +14,14 @@ fn main() {
     telemetry::init(&config);
 
     let replay = ReplaySource::new(config.replay_path.clone());
-    let sample = replay.sample_event();
+    let events = replay.read_events().unwrap_or_else(|err| {
+        eprintln!("replay error: {err}");
+        std::process::exit(3);
+    });
 
     println!(
-        "solana-yellowstone-stream-processor starting in replay mode; {}; sample_event_id={}",
+        "solana-yellowstone-stream-processor loaded replay events; {}; events={}",
         config.redacted_summary(),
-        sample.event_id()
+        events.len()
     );
 }
