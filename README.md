@@ -47,6 +47,7 @@ Current local workflow:
 
 ```bash
 make check
+make compose-up
 make run
 ```
 
@@ -56,6 +57,7 @@ Equivalent direct commands:
 cargo build --workspace
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
+docker compose up postgres
 cargo run -p solana-yellowstone-stream-processor
 ```
 
@@ -71,10 +73,16 @@ Target CLI workflow after argument parsing lands:
 cargo run -p solana-yellowstone-stream-processor -- --replay fixtures/sample_stream.jsonl
 ```
 
-PostgreSQL can be started with:
+PostgreSQL can also be started directly with:
 
 ```bash
 docker compose up postgres
+```
+
+The local compose database is exposed on host port `5433`:
+
+```text
+postgres://postgres:postgres@localhost:5433/solana_stream
 ```
 
 Expected local endpoints:
@@ -86,7 +94,7 @@ GET /status
 GET /metrics
 ```
 
-Note: the current binary reads the configured JSONL replay file, runs events through the replay batcher, and writes batches through a storage writer stub. Real PostgreSQL persistence and HTTP endpoints are not implemented yet.
+Note: the current binary reads the configured JSONL replay file, runs events through the replay batcher, applies database migrations, and persists events to PostgreSQL with `ON CONFLICT DO NOTHING`. Cursor persistence and HTTP endpoints are not implemented yet.
 
 ## Commit Style
 

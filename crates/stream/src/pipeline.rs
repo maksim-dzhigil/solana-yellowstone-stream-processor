@@ -52,13 +52,13 @@ where
     }
 }
 
-pub fn run_replay_pipeline<W>(
+pub async fn run_replay_pipeline<W>(
     events: impl IntoIterator<Item = NormalizedEvent>,
     writer: &W,
     config: PipelineConfig,
 ) -> Result<PipelineSummary, PipelineError<W::Error>>
 where
-    W: EventWriter,
+    W: EventWriter + Sync,
 {
     let mut batcher = Batcher::new(config.batch_size);
     let mut summary = PipelineSummary::default();
@@ -67,26 +67,29 @@ where
         summary.events_seen += 1;
 
         if let Some(batch) = batcher.push(event) {
-            write_batch(writer, &batch, &mut summary)?;
+            write_batch(writer, &batch, &mut summary).await?;
         }
     }
 
     if let Some(batch) = batcher.flush() {
-        write_batch(writer, &batch, &mut summary)?;
+        write_batch(writer, &batch, &mut summary).await?;
     }
 
     Ok(summary)
 }
 
-fn write_batch<W>(
+async fn write_batch<W>(
     writer: &W,
     batch: &[NormalizedEvent],
     summary: &mut PipelineSummary,
 ) -> Result<(), PipelineError<W::Error>>
 where
-    W: EventWriter,
+    W: EventWriter + Sync,
 {
-    let write_summary = writer.write_batch(batch).map_err(PipelineError::Write)?;
+    let write_summary = writer
+        .write_batch(batch)
+        .await
+        .map_err(PipelineError::Write)?;
     summary.batches_written += 1;
     summary.write_summary += write_summary;
     Ok(())
@@ -95,22 +98,30 @@ where
 #[cfg(test)]
 mod tests {
     use super::{PipelineConfig, PipelineError, run_replay_pipeline};
+    use async_trait::async_trait;
     use serde_json::json;
     use solana_yellowstone_domain::event::{EventType, NormalizedEvent};
     use solana_yellowstone_storage::{EventWriter, WriteSummary};
-    use std::cell::RefCell;
     use std::fmt;
+    use std::sync::Mutex;
 
     #[derive(Debug, Default)]
     struct FakeWriter {
-        batch_sizes: RefCell<Vec<usize>>,
+        batch_sizes: Mutex<Vec<usize>>,
     }
 
+    #[async_trait]
     impl EventWriter for FakeWriter {
         type Error = FakeWriterError;
 
-        fn write_batch(&self, events: &[NormalizedEvent]) -> Result<WriteSummary, Self::Error> {
-            self.batch_sizes.borrow_mut().push(events.len());
+        async fn write_batch(
+            &self,
+            events: &[NormalizedEvent],
+        ) -> Result<WriteSummary, Self::Error> {
+            self.batch_sizes
+                .lock()
+                .expect("batch sizes lock")
+                .push(events.len());
             Ok(WriteSummary {
                 attempted: events.len(),
                 inserted: events.len(),
@@ -133,10 +144,14 @@ mod tests {
     #[derive(Debug)]
     struct FailingWriter;
 
+    #[async_trait]
     impl EventWriter for FailingWriter {
         type Error = FakeWriterError;
 
-        fn write_batch(&self, _events: &[NormalizedEvent]) -> Result<WriteSummary, Self::Error> {
+        async fn write_batch(
+            &self,
+            _events: &[NormalizedEvent],
+        ) -> Result<WriteSummary, Self::Error> {
             Err(FakeWriterError)
         }
     }
@@ -152,8 +167,8 @@ mod tests {
         )
     }
 
-    #[test]
-    fn writes_full_and_partial_batches() {
+    #[tokio::test]
+    async fn writes_full_and_partial_batches() {
         let writer = FakeWriter::default();
         let events = [event(1), event(2), event(3), event(4), event(5)];
         let config = PipelineConfig {
@@ -161,9 +176,14 @@ mod tests {
             channel_capacity: 10,
         };
 
-        let summary = run_replay_pipeline(events, &writer, config).expect("pipeline should run");
+        let summary = run_replay_pipeline(events, &writer, config)
+            .await
+            .expect("pipeline should run");
 
-        assert_eq!(*writer.batch_sizes.borrow(), vec![2, 2, 1]);
+        assert_eq!(
+            *writer.batch_sizes.lock().expect("batch sizes lock"),
+            vec![2, 2, 1]
+        );
         assert_eq!(summary.events_seen, 5);
         assert_eq!(summary.batches_written, 3);
         assert_eq!(summary.write_summary.attempted, 5);
@@ -171,8 +191,8 @@ mod tests {
         assert_eq!(summary.write_summary.deduplicated, 0);
     }
 
-    #[test]
-    fn does_not_write_empty_batch_for_empty_input() {
+    #[tokio::test]
+    async fn does_not_write_empty_batch_for_empty_input() {
         let writer = FakeWriter::default();
         let events: Vec<NormalizedEvent> = Vec::new();
         let config = PipelineConfig {
@@ -180,16 +200,24 @@ mod tests {
             channel_capacity: 10,
         };
 
-        let summary = run_replay_pipeline(events, &writer, config).expect("pipeline should run");
+        let summary = run_replay_pipeline(events, &writer, config)
+            .await
+            .expect("pipeline should run");
 
-        assert!(writer.batch_sizes.borrow().is_empty());
+        assert!(
+            writer
+                .batch_sizes
+                .lock()
+                .expect("batch sizes lock")
+                .is_empty()
+        );
         assert_eq!(summary.events_seen, 0);
         assert_eq!(summary.batches_written, 0);
         assert_eq!(summary.write_summary.attempted, 0);
     }
 
-    #[test]
-    fn returns_writer_errors() {
+    #[tokio::test]
+    async fn returns_writer_errors() {
         let events = [event(1)];
         let config = PipelineConfig {
             batch_size: 1,
@@ -197,6 +225,7 @@ mod tests {
         };
 
         let err = run_replay_pipeline(events, &FailingWriter, config)
+            .await
             .expect_err("writer error should fail pipeline");
 
         assert!(matches!(err, PipelineError::Write(_)));

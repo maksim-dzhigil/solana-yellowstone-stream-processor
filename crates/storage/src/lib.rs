@@ -1,6 +1,7 @@
 pub mod cursor;
 pub mod postgres;
 
+use async_trait::async_trait;
 use solana_yellowstone_domain::event::NormalizedEvent;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -10,10 +11,11 @@ pub struct WriteSummary {
     pub deduplicated: usize,
 }
 
+#[async_trait]
 pub trait EventWriter {
     type Error;
 
-    fn write_batch(&self, events: &[NormalizedEvent]) -> Result<WriteSummary, Self::Error>;
+    async fn write_batch(&self, events: &[NormalizedEvent]) -> Result<WriteSummary, Self::Error>;
 }
 
 impl std::ops::AddAssign for WriteSummary {

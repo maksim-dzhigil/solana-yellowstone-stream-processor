@@ -8,7 +8,8 @@ use solana_yellowstone_storage::postgres::PostgresEventWriter;
 use solana_yellowstone_stream::pipeline::{PipelineConfig, run_replay_pipeline};
 use solana_yellowstone_stream::replay::ReplaySource;
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let config = Config::from_env().unwrap_or_else(|err| {
         eprintln!("configuration error: {err}");
         std::process::exit(2);
@@ -25,11 +26,18 @@ fn main() {
         batch_size: config.batch_size,
         channel_capacity: config.channel_capacity,
     };
-    let writer = PostgresEventWriter;
-    let summary = run_replay_pipeline(events, &writer, pipeline_config).unwrap_or_else(|err| {
-        eprintln!("pipeline error: {err}");
-        std::process::exit(4);
-    });
+    let writer = PostgresEventWriter::connect(&config.database_url)
+        .await
+        .unwrap_or_else(|err| {
+            eprintln!("postgres error: {err}");
+            std::process::exit(4);
+        });
+    let summary = run_replay_pipeline(events, &writer, pipeline_config)
+        .await
+        .unwrap_or_else(|err| {
+            eprintln!("pipeline error: {err}");
+            std::process::exit(5);
+        });
 
     println!(
         "solana-yellowstone-stream-processor completed replay pipeline; {}; events_seen={}; batches_written={}; events_attempted={}; events_inserted={}; events_deduplicated={}",

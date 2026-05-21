@@ -13,3 +13,7 @@ solana-yellowstone-storage = { path = "../storage" }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+async-trait = "0.1"
+tokio = { version = "1", features = ["macros", "rt"] }

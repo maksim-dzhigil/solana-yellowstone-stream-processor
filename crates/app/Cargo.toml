@@ -10,6 +10,7 @@ publish = false
 solana-yellowstone-domain = { path = "../domain" }
 solana-yellowstone-storage = { path = "../storage" }
 solana-yellowstone-stream = { path = "../stream" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 [lints]
 workspace = true

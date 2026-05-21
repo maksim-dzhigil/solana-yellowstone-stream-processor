@@ -7,6 +7,9 @@ repository.workspace = true
 publish = false
 
 [dependencies]
+async-trait = "0.1"
+serde_json = "1"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "json", "migrate", "macros"] }
 solana-yellowstone-domain = { path = "../domain" }
 
 [lints]

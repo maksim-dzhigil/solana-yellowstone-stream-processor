@@ -20,7 +20,7 @@ impl Config {
             database_url: env_or_default(
                 source,
                 "DATABASE_URL",
-                "postgres://postgres:postgres@localhost:5432/solana_stream",
+                "postgres://postgres:postgres@localhost:5433/solana_stream",
             )?,
             http_addr: env_or_default(source, "HTTP_ADDR", "127.0.0.1:8080")?,
             rust_log: env_or_default(source, "RUST_LOG", "info")?,
