@@ -96,6 +96,7 @@ version = "0.1.0"
 dependencies = [
  "serde_json",
  "solana-yellowstone-domain",
+ "solana-yellowstone-storage",
 ]
 
 [[package]]

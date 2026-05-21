@@ -9,6 +9,7 @@ publish = false
 [dependencies]
 serde_json = "1"
 solana-yellowstone-domain = { path = "../domain" }
+solana-yellowstone-storage = { path = "../storage" }
 
 [lints]
 workspace = true

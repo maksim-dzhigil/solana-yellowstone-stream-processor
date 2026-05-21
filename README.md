@@ -86,7 +86,7 @@ GET /status
 GET /metrics
 ```
 
-Note: the current binary reads the configured JSONL replay file and prints a redacted configuration summary plus the number of loaded events. Batching, storage, and HTTP endpoints are not implemented yet.
+Note: the current binary reads the configured JSONL replay file, runs events through the replay batcher, and writes batches through a storage writer stub. Real PostgreSQL persistence and HTTP endpoints are not implemented yet.
 
 ## Commit Style
 
