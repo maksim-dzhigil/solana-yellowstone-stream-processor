@@ -1,4 +1,5 @@
-use solana_yellowstone_domain::event::NormalizedEvent;
+use serde_json::json;
+use solana_yellowstone_domain::event::{EventType, NormalizedEvent};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReplaySource {
@@ -16,8 +17,8 @@ impl ReplaySource {
             Some("fixture-signature-1".to_owned()),
             Some("fixture-program-1".to_owned()),
             None,
-            "transaction".to_owned(),
-            format!(r#"{{"source":"{}"}}"#, self.path),
+            EventType::new(EventType::TRANSACTION).expect("static event type should be valid"),
+            json!({ "source": self.path }),
         )
     }
 }
