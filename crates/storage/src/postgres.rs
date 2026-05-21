@@ -161,9 +161,71 @@ impl TryFrom<&NormalizedEvent> for EventRow {
 
 #[cfg(test)]
 mod tests {
-    use super::{EventRow, PostgresWriteError};
+    use super::{EventRow, PostgresEventWriter, PostgresWriteError};
+    use crate::EventWriter;
     use serde_json::json;
     use solana_yellowstone_domain::event::{EventType, NormalizedEvent};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static EVENT_ID: AtomicU64 = AtomicU64::new(0);
+
+    #[tokio::test]
+    #[ignore = "requires local postgres; run `make compose-up test-postgres`"]
+    async fn writes_and_deduplicates_events_in_postgres() {
+        let database_url = std::env::var("TEST_DATABASE_URL")
+            .expect("TEST_DATABASE_URL must be set for postgres integration tests");
+        let writer = PostgresEventWriter::connect(&database_url)
+            .await
+            .expect("postgres writer should connect");
+
+        let first = unique_event(10_001);
+        let duplicate = first.clone();
+        let second = unique_event(10_002);
+
+        let first_summary = writer
+            .write_batch(&[first.clone(), duplicate, second.clone()])
+            .await
+            .expect("first batch should write");
+
+        assert_eq!(first_summary.attempted, 3);
+        assert_eq!(first_summary.inserted, 2);
+        assert_eq!(first_summary.deduplicated, 1);
+
+        let second_summary = writer
+            .write_batch(&[first.clone(), second.clone()])
+            .await
+            .expect("second batch should deduplicate");
+
+        assert_eq!(second_summary.attempted, 2);
+        assert_eq!(second_summary.inserted, 0);
+        assert_eq!(second_summary.deduplicated, 2);
+
+        let persisted_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE signature = ANY($1)")
+                .bind(vec![
+                    first.signature.as_deref(),
+                    second.signature.as_deref(),
+                ])
+                .fetch_one(&writer.pool)
+                .await
+                .expect("count query should succeed");
+
+        assert_eq!(persisted_count, 2);
+    }
+
+    fn unique_event(slot: u64) -> NormalizedEvent {
+        let id = EVENT_ID.fetch_add(1, Ordering::Relaxed);
+        let signature = format!("postgres-test-{}-{id}", std::process::id());
+
+        NormalizedEvent::new(
+            slot,
+            Some(signature),
+            Some("program-1".to_owned()),
+            None,
+            EventType::new(EventType::TRANSACTION).expect("event type should be valid"),
+            json!({ "source": "postgres-test", "id": id }),
+        )
+    }
 
     #[test]
     fn converts_normalized_event_to_postgres_row() {

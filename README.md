@@ -49,6 +49,7 @@ Current local workflow:
 make check
 make compose-up
 make run
+make test-postgres
 ```
 
 Equivalent direct commands:

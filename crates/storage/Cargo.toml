@@ -14,3 +14,6 @@ solana-yellowstone-domain = { path = "../domain" }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }

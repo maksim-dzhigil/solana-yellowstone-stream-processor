@@ -1,6 +1,8 @@
 SHELL := /bin/sh
 
-.PHONY: fmt fmt-check test clippy check build run compose-up compose-down
+TEST_DATABASE_URL ?= postgres://postgres:postgres@localhost:5433/solana_stream
+
+.PHONY: fmt fmt-check test test-postgres clippy check build run compose-up compose-down
 
 fmt:
 	cargo fmt --all
@@ -10,6 +12,9 @@ fmt-check:
 
 test:
 	cargo test --workspace
+
+test-postgres:
+	TEST_DATABASE_URL='$(TEST_DATABASE_URL)' cargo test -p solana-yellowstone-storage postgres::tests::writes_and_deduplicates_events_in_postgres -- --ignored --exact
 
 clippy:
 	cargo clippy --workspace --all-targets -- -D warnings

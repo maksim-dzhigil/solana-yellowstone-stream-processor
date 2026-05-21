@@ -1065,6 +1065,7 @@ dependencies = [
  "serde_json",
  "solana-yellowstone-domain",
  "sqlx",
+ "tokio",
 ]
 
 [[package]]
