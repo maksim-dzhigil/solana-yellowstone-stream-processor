@@ -67,6 +67,11 @@ pub async fn run(config: Config) -> Result<(), AppRunError> {
         "replay pipeline completed"
     );
 
+    if config.exit_after_replay {
+        info!(exit_after_replay = true, "exit after replay requested");
+        return Ok(());
+    }
+
     let status = StatusSnapshot::from_pipeline(config.stream_name.clone(), summary);
     info!(http_addr = %config.http_addr, "serving http endpoints");
     http::serve(&config.http_addr, status).await?;

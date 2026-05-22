@@ -8,6 +8,7 @@ pub struct Config {
     pub rust_log: String,
     pub replay_path: String,
     pub stream_name: String,
+    pub exit_after_replay: bool,
     pub batch_size: usize,
     pub channel_capacity: usize,
 }
@@ -32,6 +33,7 @@ impl Config {
             )?,
             replay_path: env_or_default(source, "REPLAY_PATH", "fixtures/sample_stream.jsonl")?,
             stream_name: env_or_default(source, "STREAM_NAME", "replay")?,
+            exit_after_replay: false,
             batch_size: env_positive_usize_or_default(source, "STREAM_BATCH_SIZE", 500)?,
             channel_capacity: env_positive_usize_or_default(
                 source,
@@ -51,16 +53,20 @@ impl Config {
         if let Some(value) = non_empty_cli_value("--stream-name", args.stream_name.as_deref())? {
             self.stream_name = value.to_owned();
         }
+        if args.exit_after_replay {
+            self.exit_after_replay = true;
+        }
 
         Ok(self)
     }
 
     pub fn redacted_summary(&self) -> String {
         format!(
-            "http_addr={}; replay_path={}; stream_name={}; batch_size={}; channel_capacity={}; database_url_configured={}",
+            "http_addr={}; replay_path={}; stream_name={}; exit_after_replay={}; batch_size={}; channel_capacity={}; database_url_configured={}",
             self.http_addr,
             self.replay_path,
             self.stream_name,
+            self.exit_after_replay,
             self.batch_size,
             self.channel_capacity,
             !self.database_url.is_empty()
@@ -160,6 +166,7 @@ mod tests {
         assert_eq!(config.rust_log, "solana_yellowstone_stream_processor=info");
         assert_eq!(config.replay_path, "fixtures/sample_stream.jsonl");
         assert_eq!(config.stream_name, "replay");
+        assert!(!config.exit_after_replay);
         assert_eq!(config.batch_size, 500);
         assert_eq!(config.channel_capacity, 10_000);
     }
@@ -201,12 +208,14 @@ mod tests {
                 replay: Some("fixtures/custom.jsonl".to_owned()),
                 stream_name: Some("custom-stream".to_owned()),
                 http_addr: Some("127.0.0.1:9000".to_owned()),
+                exit_after_replay: true,
             })
             .expect("cli overrides should apply");
 
         assert_eq!(config.replay_path, "fixtures/custom.jsonl");
         assert_eq!(config.stream_name, "custom-stream");
         assert_eq!(config.http_addr, "127.0.0.1:9000");
+        assert!(config.exit_after_replay);
         assert_eq!(
             config.database_url,
             "postgres://postgres:postgres@localhost:5433/solana_stream"
@@ -222,6 +231,7 @@ mod tests {
                 replay: Some(" ".to_owned()),
                 stream_name: None,
                 http_addr: None,
+                exit_after_replay: false,
             })
             .expect_err("empty cli override should fail");
 

@@ -77,6 +77,12 @@ CLI overrides are available for replay-local settings:
 cargo run -p solana-yellowstone-stream-processor -- --replay fixtures/sample_stream.jsonl --stream-name replay --http-addr 127.0.0.1:8080
 ```
 
+Use `--exit-after-replay` for one-shot replay runs that should finish without starting the HTTP server:
+
+```bash
+cargo run -p solana-yellowstone-stream-processor -- --replay fixtures/sample_stream.jsonl --exit-after-replay
+```
+
 `DATABASE_URL` is intentionally configured through the environment instead of CLI arguments.
 
 PostgreSQL can also be started directly with:

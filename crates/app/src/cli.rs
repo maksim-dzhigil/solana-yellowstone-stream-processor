@@ -12,4 +12,7 @@ pub struct CliArgs {
 
     #[arg(long, value_name = "ADDR")]
     pub http_addr: Option<String>,
+
+    #[arg(long)]
+    pub exit_after_replay: bool,
 }
