@@ -192,6 +192,23 @@ mod tests {
     }
 
     #[test]
+    fn redacted_summary_does_not_include_database_url_contents() {
+        let source = FakeEnv::default().with(
+            "DATABASE_URL",
+            "postgres://user:secret-password@db.example:5432/private_db",
+        );
+        let config = Config::from_source(&source).expect("config should load");
+
+        let summary = config.redacted_summary();
+
+        assert!(summary.contains("database_url_configured=true"));
+        assert!(!summary.contains("postgres://"));
+        assert!(!summary.contains("secret-password"));
+        assert!(!summary.contains("db.example"));
+        assert!(!summary.contains("private_db"));
+    }
+
+    #[test]
     fn rejects_empty_values() {
         let source = FakeEnv::default().with("HTTP_ADDR", " ");
 

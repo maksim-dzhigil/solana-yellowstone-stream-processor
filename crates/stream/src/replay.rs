@@ -146,6 +146,49 @@ mod tests {
     }
 
     #[test]
+    fn reads_jsonl_without_trailing_newline() {
+        let line = r#"{"slot":1,"signature":"sig-1","program_id":"program-1","account":null,"event_type":"transaction","payload":{"index":1}}"#;
+        let path = write_temp_fixture(line);
+
+        let events = read_jsonl_events(&path).expect("events should read");
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].slot, 1);
+
+        fs::remove_file(path).expect("remove fixture");
+    }
+
+    #[test]
+    fn reads_jsonl_with_crlf_line_endings() {
+        let first = r#"{"slot":1,"signature":"sig-1","program_id":"program-1","account":null,"event_type":"transaction","payload":{"index":1}}"#;
+        let second = r#"{"slot":2,"signature":"sig-2","program_id":"program-1","account":null,"event_type":"transaction","payload":{"index":2}}"#;
+        let path = write_temp_fixture(&format!("{first}\r\n{second}\r\n"));
+
+        let events = read_jsonl_events(&path).expect("events should read");
+
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].slot, 1);
+        assert_eq!(events[1].slot, 2);
+
+        fs::remove_file(path).expect("remove fixture");
+    }
+
+    #[test]
+    fn rejects_blank_lines_with_line_number() {
+        let valid = r#"{"slot":1,"signature":"sig-1","program_id":"program-1","account":null,"event_type":"transaction","payload":{}}"#;
+        let path = write_temp_fixture(&format!("{valid}\n   \n"));
+
+        let err = read_jsonl_events(&path).expect_err("blank line should fail");
+
+        assert!(matches!(
+            err,
+            ReplayReadError::ParseLine { line_number: 2, .. }
+        ));
+
+        fs::remove_file(path).expect("remove fixture");
+    }
+
+    #[test]
     fn keeps_duplicate_rows_as_duplicate_events() {
         let line = r#"{"slot":2,"signature":"sig-2","program_id":"program-1","account":null,"event_type":"transaction","payload":{"index":2}}"#;
         let path = write_jsonl_fixture(&[line, line]);
