@@ -1,3 +1,26 @@
+## 2026-05-22
+
+- Verified README local workflow commands and HTTP endpoint smoke behavior.
+- Consolidated project motivation and MVP guarantees into README.
+- Added a DB-backed binary success test for one-shot replay mode.
+- Added binary-level tests for CLI config and replay failure exit behavior.
+- Added HTTP endpoint contract tests for health, readiness, status, and metrics routes.
+- Added config redaction and replay parser edge-case tests.
+- Updated internal strategy and testing notes to match the current replay MVP state.
+- Added a PostgreSQL-backed replay-to-storage integration test for persistence, deduplication, and cursor progress.
+- Expanded bounded channel pipeline tests across receiver, producer, flush, resume, and error paths.
+- Routed replay processing through a bounded event channel and exposed a receiver-based pipeline entry point.
+- Introduced the first event source boundary and kept JSONL replay as its initial implementation.
+- Added one-shot replay mode for CLI-driven replay runs without starting HTTP.
+- Added CLI overrides for replay path, stream name, and HTTP bind address.
+- Moved application orchestration out of `main.rs` into a dedicated app runner.
+- Added GitHub Actions CI for formatting, tests, clippy, and PostgreSQL integration checks.
+- Added graceful shutdown handling for the HTTP server on explicit shutdown signals.
+- Added structured tracing logs for config, replay, cursor, pipeline, and HTTP lifecycle events.
+- Added Prometheus-compatible replay metrics for the HTTP status layer.
+- Added basic HTTP health, readiness, and replay status endpoints after replay completion.
+- Added replay resume from the persisted stream cursor so already processed slots are skipped on restart.
+
 ## 2026-05-21
 
 - Set up the baseline developer workflow and documented `make check` as the local quality gate.
