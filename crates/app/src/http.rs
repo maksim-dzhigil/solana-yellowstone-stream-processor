@@ -1,7 +1,7 @@
 use axum::{Json, Router, extract::State, http::header, response::IntoResponse, routing::get};
 use serde::Serialize;
 use solana_yellowstone_stream::pipeline::PipelineSummary;
-use std::{fmt, sync::Arc};
+use std::{fmt, future::Future, sync::Arc};
 use tokio::net::TcpListener;
 
 const METRICS_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
@@ -65,10 +65,26 @@ impl std::error::Error for HttpError {
 }
 
 pub async fn serve(addr: &str, status: StatusSnapshot) -> Result<(), HttpError> {
+    serve_until_shutdown(addr, status, shutdown_signal()).await
+}
+
+async fn serve_until_shutdown(
+    addr: &str,
+    status: StatusSnapshot,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> Result<(), HttpError> {
     let listener = TcpListener::bind(addr).await.map_err(HttpError::Bind)?;
     axum::serve(listener, router(status))
+        .with_graceful_shutdown(shutdown)
         .await
         .map_err(HttpError::Serve)
+}
+
+async fn shutdown_signal() {
+    if let Err(err) = tokio::signal::ctrl_c().await {
+        tracing::error!(error = %err, "failed to listen for shutdown signal");
+    }
+    tracing::info!("shutdown signal received");
 }
 
 fn router(snapshot: StatusSnapshot) -> Router {
@@ -245,7 +261,7 @@ struct ReadyResponse {
 
 #[cfg(test)]
 mod tests {
-    use super::{HealthState, StatusSnapshot, render_metrics};
+    use super::{HealthState, StatusSnapshot, render_metrics, serve_until_shutdown};
     use solana_yellowstone_storage::WriteSummary;
     use solana_yellowstone_stream::pipeline::PipelineSummary;
 
@@ -316,6 +332,26 @@ mod tests {
 
         assert!(metrics.contains("solana_stream_cursor_available 0"));
         assert!(!metrics.contains("solana_stream_last_persisted_slot "));
+    }
+
+    #[tokio::test]
+    async fn serve_returns_after_shutdown_signal() {
+        serve_until_shutdown("127.0.0.1:0", empty_status(), async {})
+            .await
+            .expect("server should shut down cleanly");
+    }
+
+    fn empty_status() -> StatusSnapshot {
+        StatusSnapshot::from_pipeline(
+            "replay",
+            PipelineSummary {
+                events_seen: 0,
+                events_skipped: 0,
+                batches_written: 0,
+                write_summary: WriteSummary::default(),
+                last_persisted_slot: None,
+            },
+        )
     }
 
     #[test]

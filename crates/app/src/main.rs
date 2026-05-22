@@ -103,4 +103,5 @@ async fn main() {
             error!(error = %err, "http server failed");
             std::process::exit(6);
         });
+    info!("http server stopped");
 }
