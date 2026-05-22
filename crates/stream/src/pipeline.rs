@@ -2,6 +2,7 @@ use crate::batcher::Batcher;
 use solana_yellowstone_domain::event::NormalizedEvent;
 use solana_yellowstone_storage::{CursorStore, EventWriter, WriteSummary};
 use std::fmt;
+use tokio::sync::mpsc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PipelineConfig {
@@ -33,6 +34,7 @@ pub struct PipelineSummary {
 pub enum PipelineError<W, C> {
     Write(W),
     Cursor(C),
+    ProducerJoin(tokio::task::JoinError),
 }
 
 impl<W, C> fmt::Display for PipelineError<W, C>
@@ -44,6 +46,7 @@ where
         match self {
             Self::Write(err) => write!(f, "failed to write event batch: {err}"),
             Self::Cursor(err) => write!(f, "failed to update stream cursor: {err}"),
+            Self::ProducerJoin(err) => write!(f, "failed to join event producer task: {err}"),
         }
     }
 }
@@ -57,12 +60,40 @@ where
         match self {
             Self::Write(err) => Some(err),
             Self::Cursor(err) => Some(err),
+            Self::ProducerJoin(err) => Some(err),
         }
     }
 }
 
-pub async fn run_replay_pipeline<W, C>(
-    events: impl IntoIterator<Item = NormalizedEvent>,
+pub async fn run_replay_pipeline<I, W, C>(
+    events: I,
+    writer: &W,
+    cursor_store: &C,
+    stream_name: &str,
+    config: PipelineConfig,
+) -> Result<PipelineSummary, PipelineError<W::Error, C::Error>>
+where
+    I: IntoIterator<Item = NormalizedEvent> + Send + 'static,
+    I::IntoIter: Send,
+    W: EventWriter + Sync,
+    C: CursorStore + Sync,
+{
+    let (sender, receiver) = mpsc::channel(config.channel_capacity);
+    let producer = tokio::spawn(send_events(events, sender));
+
+    let result =
+        run_event_receiver_pipeline(receiver, writer, cursor_store, stream_name, config).await;
+    let producer_result = producer.await.map_err(PipelineError::ProducerJoin);
+
+    match (result, producer_result) {
+        (Err(err), _) => Err(err),
+        (Ok(_), Err(err)) => Err(err),
+        (Ok(summary), Ok(())) => Ok(summary),
+    }
+}
+
+pub async fn run_event_receiver_pipeline<W, C>(
+    mut events: mpsc::Receiver<NormalizedEvent>,
     writer: &W,
     cursor_store: &C,
     stream_name: &str,
@@ -78,7 +109,7 @@ where
         ..PipelineSummary::default()
     };
 
-    for event in events {
+    while let Some(event) = events.recv().await {
         summary.events_seen += 1;
 
         if should_skip_event(&event, config.resume_after_slot) {
@@ -96,6 +127,17 @@ where
     }
 
     Ok(summary)
+}
+
+async fn send_events<I>(events: I, sender: mpsc::Sender<NormalizedEvent>)
+where
+    I: IntoIterator<Item = NormalizedEvent>,
+{
+    for event in events {
+        if sender.send(event).await.is_err() {
+            break;
+        }
+    }
 }
 
 fn should_skip_event(event: &NormalizedEvent, resume_after_slot: Option<u64>) -> bool {
@@ -138,7 +180,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{PipelineConfig, PipelineError, run_replay_pipeline};
+    use super::{PipelineConfig, PipelineError, run_event_receiver_pipeline, run_replay_pipeline};
     use async_trait::async_trait;
     use serde_json::json;
     use solana_yellowstone_domain::event::{EventType, NormalizedEvent};
@@ -147,6 +189,7 @@ mod tests {
     };
     use std::fmt;
     use std::sync::Mutex;
+    use tokio::sync::mpsc;
 
     #[derive(Debug, Default)]
     struct FakeWriter {
@@ -299,6 +342,53 @@ mod tests {
         assert_eq!(summary.write_summary.inserted, 5);
         assert_eq!(summary.write_summary.deduplicated, 0);
         assert_eq!(summary.last_persisted_slot, Some(5));
+    }
+
+    #[tokio::test]
+    async fn consumes_events_from_bounded_receiver() {
+        let writer = FakeWriter::default();
+        let cursor_store = FakeCursorStore::default();
+        let (sender, receiver) = mpsc::channel(2);
+
+        sender.send(event(1)).await.expect("send first event");
+        sender.send(event(2)).await.expect("send second event");
+        drop(sender);
+
+        let summary =
+            run_event_receiver_pipeline(receiver, &writer, &cursor_store, "receiver", config(2))
+                .await
+                .expect("pipeline should run");
+
+        assert_eq!(
+            *writer.batch_sizes.lock().expect("batch sizes lock"),
+            vec![2]
+        );
+        assert_eq!(
+            *cursor_store.updates.lock().expect("cursor updates lock"),
+            vec![("receiver".to_owned(), 2)]
+        );
+        assert_eq!(summary.events_seen, 2);
+        assert_eq!(summary.batches_written, 1);
+        assert_eq!(summary.last_persisted_slot, Some(2));
+    }
+
+    #[tokio::test]
+    async fn replay_pipeline_uses_bounded_channel_capacity() {
+        let writer = FakeWriter::default();
+        let cursor_store = FakeCursorStore::default();
+        let events = [event(1), event(2), event(3)];
+        let config = PipelineConfig {
+            channel_capacity: 1,
+            ..config(2)
+        };
+
+        let summary = run_replay_pipeline(events, &writer, &cursor_store, "replay", config)
+            .await
+            .expect("pipeline should run");
+
+        assert_eq!(summary.events_seen, 3);
+        assert_eq!(summary.batches_written, 2);
+        assert_eq!(summary.last_persisted_slot, Some(3));
     }
 
     #[tokio::test]
