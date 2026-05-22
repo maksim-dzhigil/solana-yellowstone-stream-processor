@@ -6,6 +6,7 @@ use solana_yellowstone_storage::{
 };
 use solana_yellowstone_stream::pipeline::{PipelineConfig, run_replay_pipeline};
 use solana_yellowstone_stream::replay::ReplaySource;
+use solana_yellowstone_stream::source::EventSource;
 use tracing::info;
 
 pub async fn run(config: Config) -> Result<(), AppRunError> {
@@ -13,7 +14,7 @@ pub async fn run(config: Config) -> Result<(), AppRunError> {
 
     let replay = ReplaySource::new(config.replay_path.clone());
     info!(replay_path = %config.replay_path, "reading replay events");
-    let events = replay.read_events()?;
+    let events = EventSource::read_events(&replay)?;
     info!(events_loaded = events.len(), "replay events loaded");
 
     info!("connecting to postgres");

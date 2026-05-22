@@ -1,6 +1,7 @@
 pub mod batcher;
 pub mod pipeline;
 pub mod replay;
+pub mod source;
 
 #[cfg(test)]
 mod tests {

@@ -1,3 +1,4 @@
+use crate::source::EventSource;
 use solana_yellowstone_domain::event::{
     NormalizedEvent, NormalizedEventParseError, parse_normalized_event,
 };
@@ -17,6 +18,15 @@ impl ReplaySource {
     }
 
     pub fn read_events(&self) -> Result<Vec<NormalizedEvent>, ReplayReadError> {
+        EventSource::read_events(self)
+    }
+}
+
+impl EventSource for ReplaySource {
+    type Error = ReplayReadError;
+    type Events = Vec<NormalizedEvent>;
+
+    fn read_events(&self) -> Result<Self::Events, Self::Error> {
         read_jsonl_events(&self.path)
     }
 }
@@ -97,7 +107,8 @@ pub fn read_jsonl_events(path: impl AsRef<Path>) -> Result<Vec<NormalizedEvent>,
 
 #[cfg(test)]
 mod tests {
-    use super::{ReplayReadError, read_jsonl_events};
+    use super::{ReplayReadError, ReplaySource, read_jsonl_events};
+    use crate::source::EventSource;
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -143,6 +154,20 @@ mod tests {
 
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].event_id(), events[1].event_id());
+
+        fs::remove_file(path).expect("remove fixture");
+    }
+
+    #[test]
+    fn replay_source_implements_event_source_boundary() {
+        let line = r#"{"slot":3,"signature":"sig-3","program_id":"program-1","account":null,"event_type":"transaction","payload":{"index":3}}"#;
+        let path = write_jsonl_fixture(&[line]);
+        let source = ReplaySource::new(&path);
+
+        let events = EventSource::read_events(&source).expect("events should read");
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].slot, 3);
 
         fs::remove_file(path).expect("remove fixture");
     }
