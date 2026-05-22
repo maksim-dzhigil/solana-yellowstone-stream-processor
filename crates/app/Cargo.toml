@@ -13,6 +13,8 @@ solana-yellowstone-domain = { path = "../domain" }
 solana-yellowstone-storage = { path = "../storage" }
 solana-yellowstone-stream = { path = "../stream" }
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
 [lints]
 workspace = true
