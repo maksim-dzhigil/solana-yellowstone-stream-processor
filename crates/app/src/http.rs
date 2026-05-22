@@ -261,9 +261,18 @@ struct ReadyResponse {
 
 #[cfg(test)]
 mod tests {
-    use super::{HealthState, StatusSnapshot, render_metrics, serve_until_shutdown};
+    use super::{
+        HealthState, METRICS_CONTENT_TYPE, StatusSnapshot, render_metrics, router,
+        serve_until_shutdown,
+    };
+    use axum::{
+        body::{Body, to_bytes},
+        http::{Request, StatusCode, header},
+    };
+    use serde_json::Value;
     use solana_yellowstone_storage::WriteSummary;
     use solana_yellowstone_stream::pipeline::PipelineSummary;
+    use tower::ServiceExt;
 
     #[test]
     fn builds_status_snapshot_from_pipeline_summary() {
@@ -341,6 +350,76 @@ mod tests {
             .expect("server should shut down cleanly");
     }
 
+    #[tokio::test]
+    async fn healthz_endpoint_returns_ok() {
+        let response = request("/healthz").await;
+
+        assert_eq!(response.status, StatusCode::OK);
+        assert_eq!(response.body, "ok");
+    }
+
+    #[tokio::test]
+    async fn readyz_endpoint_returns_json_ready_state() {
+        let response = request("/readyz").await;
+
+        assert_eq!(response.status, StatusCode::OK);
+        assert_content_type_starts_with(&response, "application/json");
+        let body: Value = serde_json::from_str(&response.body).expect("readyz json should parse");
+        assert_eq!(body, serde_json::json!({ "ready": true }));
+    }
+
+    #[tokio::test]
+    async fn status_endpoint_returns_pipeline_snapshot() {
+        let response = request("/status").await;
+
+        assert_eq!(response.status, StatusCode::OK);
+        assert_content_type_starts_with(&response, "application/json");
+        let body: Value = serde_json::from_str(&response.body).expect("status json should parse");
+        assert_eq!(body["health"], "ready");
+        assert_eq!(body["stream_name"], "contract-test");
+        assert_eq!(body["last_persisted_slot"], 42);
+        assert_eq!(body["events_seen"], 10);
+        assert_eq!(body["events_skipped"], 4);
+        assert_eq!(body["batches_written"], 2);
+        assert_eq!(body["events_attempted"], 6);
+        assert_eq!(body["events_inserted"], 5);
+        assert_eq!(body["events_deduplicated"], 1);
+    }
+
+    #[tokio::test]
+    async fn metrics_endpoint_returns_prometheus_text() {
+        let response = request("/metrics").await;
+
+        assert_eq!(response.status, StatusCode::OK);
+        assert_content_type_starts_with(&response, METRICS_CONTENT_TYPE);
+        assert!(
+            response
+                .body
+                .contains("# TYPE solana_stream_events_seen_total counter")
+        );
+        assert!(
+            response
+                .body
+                .contains("solana_stream_info{stream_name=\"contract-test\"} 1")
+        );
+        assert!(response.body.contains("solana_stream_events_seen_total 10"));
+        assert!(
+            response
+                .body
+                .contains("solana_stream_events_inserted_total 5")
+        );
+        assert!(
+            response
+                .body
+                .contains("solana_stream_events_deduplicated_total 1")
+        );
+        assert!(
+            response
+                .body
+                .contains("solana_stream_last_persisted_slot 42")
+        );
+    }
+
     fn empty_status() -> StatusSnapshot {
         StatusSnapshot::from_pipeline(
             "replay",
@@ -352,6 +431,69 @@ mod tests {
                 last_persisted_slot: None,
             },
         )
+    }
+
+    fn contract_status() -> StatusSnapshot {
+        StatusSnapshot::from_pipeline(
+            "contract-test",
+            PipelineSummary {
+                events_seen: 10,
+                events_skipped: 4,
+                batches_written: 2,
+                write_summary: WriteSummary {
+                    attempted: 6,
+                    inserted: 5,
+                    deduplicated: 1,
+                },
+                last_persisted_slot: Some(42),
+            },
+        )
+    }
+
+    struct TestResponse {
+        status: StatusCode,
+        content_type: Option<String>,
+        body: String,
+    }
+
+    async fn request(path: &str) -> TestResponse {
+        let response = router(contract_status())
+            .oneshot(
+                Request::builder()
+                    .uri(path)
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+        let status = response.status();
+        let content_type = response.headers().get(header::CONTENT_TYPE).map(|value| {
+            value
+                .to_str()
+                .expect("content type should be ascii")
+                .to_owned()
+        });
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body should read");
+
+        TestResponse {
+            status,
+            content_type,
+            body: String::from_utf8(body.to_vec()).expect("body should be utf8"),
+        }
+    }
+
+    fn assert_content_type_starts_with(response: &TestResponse, expected: &str) {
+        let content_type = response
+            .content_type
+            .as_deref()
+            .expect("content type should be set");
+
+        assert!(
+            content_type.starts_with(expected),
+            "expected content type {content_type:?} to start with {expected:?}"
+        );
     }
 
     #[test]
