@@ -1,18 +1,24 @@
 mod app;
+mod cli;
 mod config;
 mod error;
 mod http;
 mod telemetry;
 
+use clap::Parser;
+use cli::CliArgs;
 use config::Config;
 use tracing::error;
 
 #[tokio::main]
 async fn main() {
-    let config = Config::from_env().unwrap_or_else(|err| {
-        eprintln!("configuration error: {err}");
-        std::process::exit(2);
-    });
+    let args = CliArgs::parse();
+    let config = Config::from_env()
+        .and_then(|config| config.apply_overrides(&args))
+        .unwrap_or_else(|err| {
+            eprintln!("configuration error: {err}");
+            std::process::exit(2);
+        });
     telemetry::init(&config).unwrap_or_else(|err| {
         eprintln!("telemetry error: {err}");
         std::process::exit(2);

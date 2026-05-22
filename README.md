@@ -71,11 +71,13 @@ The app currently reads `REPLAY_PATH`, defaulting to `fixtures/sample_stream.jso
 REPLAY_PATH=fixtures/sample_stream.jsonl cargo run -p solana-yellowstone-stream-processor
 ```
 
-Target CLI workflow after argument parsing lands:
+CLI overrides are available for replay-local settings:
 
 ```bash
-cargo run -p solana-yellowstone-stream-processor -- --replay fixtures/sample_stream.jsonl
+cargo run -p solana-yellowstone-stream-processor -- --replay fixtures/sample_stream.jsonl --stream-name replay --http-addr 127.0.0.1:8080
 ```
+
+`DATABASE_URL` is intentionally configured through the environment instead of CLI arguments.
 
 PostgreSQL can also be started directly with:
 

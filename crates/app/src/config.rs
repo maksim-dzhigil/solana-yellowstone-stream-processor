@@ -1,3 +1,4 @@
+use crate::cli::CliArgs;
 use crate::error::ConfigError;
 
 #[derive(Debug, Clone)]
@@ -40,6 +41,20 @@ impl Config {
         })
     }
 
+    pub fn apply_overrides(mut self, args: &CliArgs) -> Result<Self, ConfigError> {
+        if let Some(value) = non_empty_cli_value("--http-addr", args.http_addr.as_deref())? {
+            self.http_addr = value.to_owned();
+        }
+        if let Some(value) = non_empty_cli_value("--replay", args.replay.as_deref())? {
+            self.replay_path = value.to_owned();
+        }
+        if let Some(value) = non_empty_cli_value("--stream-name", args.stream_name.as_deref())? {
+            self.stream_name = value.to_owned();
+        }
+
+        Ok(self)
+    }
+
     pub fn redacted_summary(&self) -> String {
         format!(
             "http_addr={}; replay_path={}; stream_name={}; batch_size={}; channel_capacity={}; database_url_configured={}",
@@ -66,6 +81,17 @@ impl ConfigSource for SystemEnv {
             Err(std::env::VarError::NotPresent) => Ok(None),
             Err(std::env::VarError::NotUnicode(_)) => Err(ConfigError::NotUnicode { key }),
         }
+    }
+}
+
+fn non_empty_cli_value<'a>(
+    key: &'static str,
+    value: Option<&'a str>,
+) -> Result<Option<&'a str>, ConfigError> {
+    match value {
+        Some(value) if value.trim().is_empty() => Err(ConfigError::Empty { key }),
+        Some(value) => Ok(Some(value)),
+        None => Ok(None),
     }
 }
 
@@ -104,6 +130,7 @@ fn env_positive_usize_or_default(
 #[cfg(test)]
 mod tests {
     use super::{Config, ConfigSource};
+    use crate::cli::CliArgs;
     use crate::error::ConfigError;
     use std::collections::HashMap;
 
@@ -164,6 +191,41 @@ mod tests {
         let err = Config::from_source(&source).expect_err("empty value should fail");
 
         assert_eq!(err, ConfigError::Empty { key: "HTTP_ADDR" });
+    }
+
+    #[test]
+    fn applies_cli_overrides_after_env_config() {
+        let config = Config::from_source(&FakeEnv::default())
+            .expect("config should load")
+            .apply_overrides(&CliArgs {
+                replay: Some("fixtures/custom.jsonl".to_owned()),
+                stream_name: Some("custom-stream".to_owned()),
+                http_addr: Some("127.0.0.1:9000".to_owned()),
+            })
+            .expect("cli overrides should apply");
+
+        assert_eq!(config.replay_path, "fixtures/custom.jsonl");
+        assert_eq!(config.stream_name, "custom-stream");
+        assert_eq!(config.http_addr, "127.0.0.1:9000");
+        assert_eq!(
+            config.database_url,
+            "postgres://postgres:postgres@localhost:5433/solana_stream"
+        );
+    }
+
+    #[test]
+    fn rejects_empty_cli_overrides() {
+        let config = Config::from_source(&FakeEnv::default()).expect("config should load");
+
+        let err = config
+            .apply_overrides(&CliArgs {
+                replay: Some(" ".to_owned()),
+                stream_name: None,
+                http_addr: None,
+            })
+            .expect_err("empty cli override should fail");
+
+        assert_eq!(err, ConfigError::Empty { key: "--replay" });
     }
 
     #[test]
