@@ -36,7 +36,7 @@ flowchart LR
 - Normalized internal event model.
 - PostgreSQL batch inserts.
 - Idempotent writes via stable `event_id`.
-- Cursor update after successful persistence.
+- Cursor resume and update after successful persistence.
 - Bounded channels and batching.
 - `/healthz`, `/readyz`, `/status`, `/metrics`.
 - Tests without a live Yellowstone endpoint.
@@ -62,7 +62,7 @@ docker compose up postgres
 cargo run -p solana-yellowstone-stream-processor
 ```
 
-The app currently reads `REPLAY_PATH`, defaulting to `fixtures/sample_stream.jsonl`, and writes cursor progress under `STREAM_NAME`, defaulting to `replay`. Override the replay path with:
+The app currently reads `REPLAY_PATH`, defaulting to `fixtures/sample_stream.jsonl`, resumes after the persisted cursor for `STREAM_NAME`, and writes cursor progress under the same stream name. `STREAM_NAME` defaults to `replay`. Override the replay path with:
 
 ```bash
 REPLAY_PATH=fixtures/sample_stream.jsonl cargo run -p solana-yellowstone-stream-processor
@@ -95,7 +95,7 @@ GET /status
 GET /metrics
 ```
 
-Note: the current binary reads the configured JSONL replay file, runs events through the replay batcher, applies database migrations, persists events to PostgreSQL with `ON CONFLICT DO NOTHING`, and updates the stream cursor after successful batch persistence. HTTP endpoints are not implemented yet.
+Note: the current binary reads the configured JSONL replay file, applies database migrations, reads the persisted stream cursor, skips replay events at or before the cursor slot, persists new events to PostgreSQL with `ON CONFLICT DO NOTHING`, and updates the cursor after successful batch persistence. HTTP endpoints are not implemented yet.
 
 ## Commit Style
 

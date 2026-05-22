@@ -37,6 +37,30 @@ impl PostgresCursorStore {
 impl CursorStore for PostgresCursorStore {
     type Error = PostgresCursorError;
 
+    async fn get_cursor(&self, stream_name: &str) -> Result<Option<StreamCursor>, Self::Error> {
+        let row: Option<(String, i64)> = sqlx::query_as(
+            "SELECT stream_name, last_persisted_slot FROM stream_cursors WHERE stream_name = $1",
+        )
+        .bind(stream_name)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(PostgresCursorError::Sqlx)?;
+
+        row.map(|(stream_name, last_persisted_slot)| {
+            let last_persisted_slot = u64::try_from(last_persisted_slot).map_err(|_| {
+                PostgresCursorError::PersistedSlotOutOfRange {
+                    slot: last_persisted_slot,
+                }
+            })?;
+
+            Ok(StreamCursor {
+                stream_name,
+                last_persisted_slot,
+            })
+        })
+        .transpose()
+    }
+
     async fn update_after_batch(
         &self,
         stream_name: &str,
@@ -73,6 +97,7 @@ impl CursorStore for PostgresCursorStore {
 #[derive(Debug)]
 pub enum PostgresCursorError {
     SlotOutOfRange { slot: u64 },
+    PersistedSlotOutOfRange { slot: i64 },
     Sqlx(sqlx::Error),
 }
 
@@ -82,7 +107,10 @@ impl fmt::Display for PostgresCursorError {
             Self::SlotOutOfRange { slot } => {
                 write!(f, "cursor slot {slot} does not fit into postgres BIGINT")
             }
-            Self::Sqlx(err) => write!(f, "postgres cursor update failed: {err}"),
+            Self::PersistedSlotOutOfRange { slot } => {
+                write!(f, "persisted cursor slot {slot} cannot be converted to u64")
+            }
+            Self::Sqlx(err) => write!(f, "postgres cursor operation failed: {err}"),
         }
     }
 }
@@ -90,7 +118,7 @@ impl fmt::Display for PostgresCursorError {
 impl std::error::Error for PostgresCursorError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::SlotOutOfRange { .. } => None,
+            Self::SlotOutOfRange { .. } | Self::PersistedSlotOutOfRange { .. } => None,
             Self::Sqlx(err) => Some(err),
         }
     }
@@ -137,6 +165,24 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires local postgres; run `make compose-up test-postgres`"]
+    async fn returns_none_for_missing_cursor() {
+        let database_url = std::env::var("TEST_DATABASE_URL")
+            .expect("TEST_DATABASE_URL must be set for postgres integration tests");
+        let writer = PostgresEventWriter::connect(&database_url)
+            .await
+            .expect("postgres writer should connect");
+        let cursor_store = PostgresCursorStore::from_pool(writer.pool().clone());
+
+        let cursor = cursor_store
+            .get_cursor(&unique_stream_name())
+            .await
+            .expect("cursor read should succeed");
+
+        assert_eq!(cursor, None);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires local postgres; run `make compose-up test-postgres`"]
     async fn upserts_cursor_without_moving_backwards() {
         let database_url = std::env::var("TEST_DATABASE_URL")
             .expect("TEST_DATABASE_URL must be set for postgres integration tests");
@@ -159,15 +205,14 @@ mod tests {
             .await
             .expect("cursor should advance");
 
-        let persisted_slot: i64 = sqlx::query_scalar(
-            "SELECT last_persisted_slot FROM stream_cursors WHERE stream_name = $1",
-        )
-        .bind(&stream_name)
-        .fetch_one(writer.pool())
-        .await
-        .expect("cursor query should succeed");
+        let persisted_cursor = cursor_store
+            .get_cursor(&stream_name)
+            .await
+            .expect("cursor read should succeed")
+            .expect("cursor should exist");
 
-        assert_eq!(persisted_slot, 150);
+        assert_eq!(persisted_cursor.stream_name, stream_name);
+        assert_eq!(persisted_cursor.last_persisted_slot, 150);
     }
 
     fn unique_stream_name() -> String {

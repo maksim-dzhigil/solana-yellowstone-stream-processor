@@ -1,6 +1,7 @@
 pub mod cursor;
 pub mod postgres;
 
+use crate::cursor::StreamCursor;
 use async_trait::async_trait;
 use solana_yellowstone_domain::event::NormalizedEvent;
 
@@ -21,6 +22,8 @@ pub trait EventWriter {
 #[async_trait]
 pub trait CursorStore {
     type Error;
+
+    async fn get_cursor(&self, stream_name: &str) -> Result<Option<StreamCursor>, Self::Error>;
 
     async fn update_after_batch(
         &self,

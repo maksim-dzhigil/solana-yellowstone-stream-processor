@@ -7,6 +7,7 @@ use std::fmt;
 pub struct PipelineConfig {
     pub batch_size: usize,
     pub channel_capacity: usize,
+    pub resume_after_slot: Option<u64>,
 }
 
 impl Default for PipelineConfig {
@@ -14,6 +15,7 @@ impl Default for PipelineConfig {
         Self {
             batch_size: 500,
             channel_capacity: 10_000,
+            resume_after_slot: None,
         }
     }
 }
@@ -21,6 +23,7 @@ impl Default for PipelineConfig {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct PipelineSummary {
     pub events_seen: usize,
+    pub events_skipped: usize,
     pub batches_written: usize,
     pub write_summary: WriteSummary,
     pub last_persisted_slot: Option<u64>,
@@ -70,10 +73,18 @@ where
     C: CursorStore + Sync,
 {
     let mut batcher = Batcher::new(config.batch_size);
-    let mut summary = PipelineSummary::default();
+    let mut summary = PipelineSummary {
+        last_persisted_slot: config.resume_after_slot,
+        ..PipelineSummary::default()
+    };
 
     for event in events {
         summary.events_seen += 1;
+
+        if should_skip_event(&event, config.resume_after_slot) {
+            summary.events_skipped += 1;
+            continue;
+        }
 
         if let Some(batch) = batcher.push(event) {
             write_batch(writer, cursor_store, stream_name, &batch, &mut summary).await?;
@@ -85,6 +96,10 @@ where
     }
 
     Ok(summary)
+}
+
+fn should_skip_event(event: &NormalizedEvent, resume_after_slot: Option<u64>) -> bool {
+    resume_after_slot.is_some_and(|slot| event.slot <= slot)
 }
 
 async fn write_batch<W, C>(
@@ -127,7 +142,9 @@ mod tests {
     use async_trait::async_trait;
     use serde_json::json;
     use solana_yellowstone_domain::event::{EventType, NormalizedEvent};
-    use solana_yellowstone_storage::{CursorStore, EventWriter, WriteSummary};
+    use solana_yellowstone_storage::{
+        CursorStore, EventWriter, WriteSummary, cursor::StreamCursor,
+    };
     use std::fmt;
     use std::sync::Mutex;
 
@@ -164,6 +181,13 @@ mod tests {
     #[async_trait]
     impl CursorStore for FakeCursorStore {
         type Error = FakeError;
+
+        async fn get_cursor(&self, stream_name: &str) -> Result<Option<StreamCursor>, Self::Error> {
+            Ok(Some(StreamCursor {
+                stream_name: stream_name.to_owned(),
+                last_persisted_slot: 0,
+            }))
+        }
 
         async fn update_after_batch(
             &self,
@@ -211,6 +235,13 @@ mod tests {
     impl CursorStore for FailingCursorStore {
         type Error = FakeError;
 
+        async fn get_cursor(
+            &self,
+            _stream_name: &str,
+        ) -> Result<Option<StreamCursor>, Self::Error> {
+            Err(FakeError)
+        }
+
         async fn update_after_batch(
             &self,
             _stream_name: &str,
@@ -231,17 +262,21 @@ mod tests {
         )
     }
 
+    fn config(batch_size: usize) -> PipelineConfig {
+        PipelineConfig {
+            batch_size,
+            channel_capacity: 10,
+            resume_after_slot: None,
+        }
+    }
+
     #[tokio::test]
     async fn writes_full_and_partial_batches() {
         let writer = FakeWriter::default();
         let cursor_store = FakeCursorStore::default();
         let events = [event(1), event(2), event(3), event(4), event(5)];
-        let config = PipelineConfig {
-            batch_size: 2,
-            channel_capacity: 10,
-        };
 
-        let summary = run_replay_pipeline(events, &writer, &cursor_store, "replay", config)
+        let summary = run_replay_pipeline(events, &writer, &cursor_store, "replay", config(2))
             .await
             .expect("pipeline should run");
 
@@ -258,6 +293,7 @@ mod tests {
             ]
         );
         assert_eq!(summary.events_seen, 5);
+        assert_eq!(summary.events_skipped, 0);
         assert_eq!(summary.batches_written, 3);
         assert_eq!(summary.write_summary.attempted, 5);
         assert_eq!(summary.write_summary.inserted, 5);
@@ -266,13 +302,42 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn does_not_write_empty_batch_for_empty_input() {
+    async fn skips_events_at_or_before_resume_slot() {
         let writer = FakeWriter::default();
         let cursor_store = FakeCursorStore::default();
-        let events: Vec<NormalizedEvent> = Vec::new();
+        let events = [event(1), event(2), event(3), event(4), event(5)];
         let config = PipelineConfig {
-            batch_size: 2,
-            channel_capacity: 10,
+            resume_after_slot: Some(2),
+            ..config(2)
+        };
+
+        let summary = run_replay_pipeline(events, &writer, &cursor_store, "replay", config)
+            .await
+            .expect("pipeline should run");
+
+        assert_eq!(
+            *writer.batch_sizes.lock().expect("batch sizes lock"),
+            vec![2, 1]
+        );
+        assert_eq!(
+            *cursor_store.updates.lock().expect("cursor updates lock"),
+            vec![("replay".to_owned(), 4), ("replay".to_owned(), 5)]
+        );
+        assert_eq!(summary.events_seen, 5);
+        assert_eq!(summary.events_skipped, 2);
+        assert_eq!(summary.batches_written, 2);
+        assert_eq!(summary.write_summary.attempted, 3);
+        assert_eq!(summary.last_persisted_slot, Some(5));
+    }
+
+    #[tokio::test]
+    async fn keeps_existing_cursor_when_all_events_are_skipped() {
+        let writer = FakeWriter::default();
+        let cursor_store = FakeCursorStore::default();
+        let events = [event(1), event(2)];
+        let config = PipelineConfig {
+            resume_after_slot: Some(5),
+            ..config(2)
         };
 
         let summary = run_replay_pipeline(events, &writer, &cursor_store, "replay", config)
@@ -293,7 +358,39 @@ mod tests {
                 .expect("cursor updates lock")
                 .is_empty()
         );
+        assert_eq!(summary.events_seen, 2);
+        assert_eq!(summary.events_skipped, 2);
+        assert_eq!(summary.batches_written, 0);
+        assert_eq!(summary.write_summary.attempted, 0);
+        assert_eq!(summary.last_persisted_slot, Some(5));
+    }
+
+    #[tokio::test]
+    async fn does_not_write_empty_batch_for_empty_input() {
+        let writer = FakeWriter::default();
+        let cursor_store = FakeCursorStore::default();
+        let events: Vec<NormalizedEvent> = Vec::new();
+
+        let summary = run_replay_pipeline(events, &writer, &cursor_store, "replay", config(2))
+            .await
+            .expect("pipeline should run");
+
+        assert!(
+            writer
+                .batch_sizes
+                .lock()
+                .expect("batch sizes lock")
+                .is_empty()
+        );
+        assert!(
+            cursor_store
+                .updates
+                .lock()
+                .expect("cursor updates lock")
+                .is_empty()
+        );
         assert_eq!(summary.events_seen, 0);
+        assert_eq!(summary.events_skipped, 0);
         assert_eq!(summary.batches_written, 0);
         assert_eq!(summary.write_summary.attempted, 0);
         assert_eq!(summary.last_persisted_slot, None);
@@ -303,12 +400,8 @@ mod tests {
     async fn returns_writer_errors() {
         let cursor_store = FakeCursorStore::default();
         let events = [event(1)];
-        let config = PipelineConfig {
-            batch_size: 1,
-            channel_capacity: 10,
-        };
 
-        let err = run_replay_pipeline(events, &FailingWriter, &cursor_store, "replay", config)
+        let err = run_replay_pipeline(events, &FailingWriter, &cursor_store, "replay", config(1))
             .await
             .expect_err("writer error should fail pipeline");
 
@@ -326,12 +419,8 @@ mod tests {
     async fn returns_cursor_errors_after_successful_write() {
         let writer = FakeWriter::default();
         let events = [event(1)];
-        let config = PipelineConfig {
-            batch_size: 1,
-            channel_capacity: 10,
-        };
 
-        let err = run_replay_pipeline(events, &writer, &FailingCursorStore, "replay", config)
+        let err = run_replay_pipeline(events, &writer, &FailingCursorStore, "replay", config(1))
             .await
             .expect_err("cursor error should fail pipeline");
 
