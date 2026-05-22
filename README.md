@@ -47,10 +47,13 @@ Current local workflow:
 
 ```bash
 make check
+make verify
 make compose-up
 make run
 make test-postgres
 ```
+
+Use `make verify` before opening a pull request or pushing CI-bound changes. It runs formatting checks, workspace tests, clippy, and Docker-backed PostgreSQL tests.
 
 Equivalent direct commands:
 
