@@ -14,7 +14,7 @@ test:
 	cargo test --workspace
 
 test-postgres:
-	TEST_DATABASE_URL='$(TEST_DATABASE_URL)' cargo test -p solana-yellowstone-storage -- --ignored
+	TEST_DATABASE_URL='$(TEST_DATABASE_URL)' cargo test --workspace -- --ignored
 
 clippy:
 	cargo clippy --workspace --all-targets -- -D warnings
