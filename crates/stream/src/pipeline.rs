@@ -180,7 +180,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{PipelineConfig, PipelineError, run_event_receiver_pipeline, run_replay_pipeline};
+    use super::{
+        PipelineConfig, PipelineError, run_event_receiver_pipeline, run_replay_pipeline,
+        send_events,
+    };
     use async_trait::async_trait;
     use serde_json::json;
     use solana_yellowstone_domain::event::{EventType, NormalizedEvent};
@@ -370,6 +373,139 @@ mod tests {
         assert_eq!(summary.events_seen, 2);
         assert_eq!(summary.batches_written, 1);
         assert_eq!(summary.last_persisted_slot, Some(2));
+    }
+
+    #[tokio::test]
+    async fn flushes_partial_batch_when_receiver_closes() {
+        let writer = FakeWriter::default();
+        let cursor_store = FakeCursorStore::default();
+        let (sender, receiver) = mpsc::channel(2);
+
+        sender.send(event(1)).await.expect("send event");
+        drop(sender);
+
+        let summary =
+            run_event_receiver_pipeline(receiver, &writer, &cursor_store, "receiver", config(2))
+                .await
+                .expect("pipeline should run");
+
+        assert_eq!(
+            *writer.batch_sizes.lock().expect("batch sizes lock"),
+            vec![1]
+        );
+        assert_eq!(summary.events_seen, 1);
+        assert_eq!(summary.batches_written, 1);
+        assert_eq!(summary.write_summary.attempted, 1);
+        assert_eq!(summary.last_persisted_slot, Some(1));
+    }
+
+    #[tokio::test]
+    async fn receiver_pipeline_skips_events_at_or_before_resume_slot() {
+        let writer = FakeWriter::default();
+        let cursor_store = FakeCursorStore::default();
+        let (sender, receiver) = mpsc::channel(3);
+        let config = PipelineConfig {
+            resume_after_slot: Some(2),
+            ..config(2)
+        };
+
+        sender.send(event(1)).await.expect("send first event");
+        sender.send(event(2)).await.expect("send second event");
+        sender.send(event(3)).await.expect("send third event");
+        drop(sender);
+
+        let summary =
+            run_event_receiver_pipeline(receiver, &writer, &cursor_store, "receiver", config)
+                .await
+                .expect("pipeline should run");
+
+        assert_eq!(
+            *writer.batch_sizes.lock().expect("batch sizes lock"),
+            vec![1]
+        );
+        assert_eq!(summary.events_seen, 3);
+        assert_eq!(summary.events_skipped, 2);
+        assert_eq!(summary.write_summary.attempted, 1);
+        assert_eq!(summary.last_persisted_slot, Some(3));
+    }
+
+    #[tokio::test]
+    async fn receiver_pipeline_returns_writer_errors() {
+        let cursor_store = FakeCursorStore::default();
+        let (sender, receiver) = mpsc::channel(1);
+
+        sender.send(event(1)).await.expect("send event");
+        drop(sender);
+
+        let err = run_event_receiver_pipeline(
+            receiver,
+            &FailingWriter,
+            &cursor_store,
+            "receiver",
+            config(1),
+        )
+        .await
+        .expect_err("writer error should fail pipeline");
+
+        assert!(matches!(err, PipelineError::Write(_)));
+        assert!(
+            cursor_store
+                .updates
+                .lock()
+                .expect("cursor updates lock")
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn receiver_pipeline_returns_cursor_errors_after_successful_write() {
+        let writer = FakeWriter::default();
+        let (sender, receiver) = mpsc::channel(1);
+
+        sender.send(event(1)).await.expect("send event");
+        drop(sender);
+
+        let err = run_event_receiver_pipeline(
+            receiver,
+            &writer,
+            &FailingCursorStore,
+            "receiver",
+            config(1),
+        )
+        .await
+        .expect_err("cursor error should fail pipeline");
+
+        assert!(matches!(err, PipelineError::Cursor(_)));
+        assert_eq!(
+            *writer.batch_sizes.lock().expect("batch sizes lock"),
+            vec![1]
+        );
+    }
+
+    #[tokio::test]
+    async fn producer_stops_when_receiver_is_closed() {
+        struct PanicAfterFirstEvent {
+            next_slot: u64,
+        }
+
+        impl Iterator for PanicAfterFirstEvent {
+            type Item = NormalizedEvent;
+
+            fn next(&mut self) -> Option<Self::Item> {
+                match self.next_slot {
+                    1 => {
+                        self.next_slot = 2;
+                        Some(event(1))
+                    }
+                    _ => panic!("producer should stop after the first failed send"),
+                }
+            }
+        }
+
+        let (sender, receiver) = mpsc::channel(1);
+        drop(receiver);
+
+        send_events(PanicAfterFirstEvent { next_slot: 1 }, sender).await;
     }
 
     #[tokio::test]
