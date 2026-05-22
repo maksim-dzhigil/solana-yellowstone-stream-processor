@@ -102,21 +102,6 @@ After replay completes, `make run` keeps the process alive so these endpoints re
 
 Note: the current binary reads the configured JSONL replay file, applies database migrations, reads the persisted stream cursor, skips replay events at or before the cursor slot, persists new events to PostgreSQL with `ON CONFLICT DO NOTHING`, updates the cursor after successful batch persistence, and then serves HTTP status and metrics endpoints on `HTTP_ADDR`.
 
-## Commit Style
-
-Use Conventional Commits for readable project history:
-
-```text
-feat: add replay reader
-fix: reject invalid batch size config
-docs: update local run instructions
-test: add duplicate replay test
-chore: add baseline developer workflow
-refactor: split cursor storage module
-```
-
-Prefer one logical change per commit.
-
 ## Documentation
 
 - [MOTIVATION.md](MOTIVATION.md) - project motivation and value.
