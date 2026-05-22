@@ -38,7 +38,8 @@ flowchart LR
 - Idempotent writes via stable `event_id`.
 - Cursor resume and update after successful persistence.
 - Bounded channels and batching.
-- `/healthz`, `/readyz`, `/status`, `/metrics`.
+- `/healthz`, `/readyz`, and `/status`.
+- `/metrics` placeholder after core status is stable.
 - Tests without a live Yellowstone endpoint.
 
 ## Local Run
@@ -92,10 +93,11 @@ Expected local endpoints:
 GET /healthz
 GET /readyz
 GET /status
-GET /metrics
 ```
 
-Note: the current binary reads the configured JSONL replay file, applies database migrations, reads the persisted stream cursor, skips replay events at or before the cursor slot, persists new events to PostgreSQL with `ON CONFLICT DO NOTHING`, and updates the cursor after successful batch persistence. HTTP endpoints are not implemented yet.
+After replay completes, `make run` keeps the process alive so these endpoints remain available.
+
+Note: the current binary reads the configured JSONL replay file, applies database migrations, reads the persisted stream cursor, skips replay events at or before the cursor slot, persists new events to PostgreSQL with `ON CONFLICT DO NOTHING`, updates the cursor after successful batch persistence, and then serves HTTP status endpoints on `HTTP_ADDR`.
 
 ## Commit Style
 

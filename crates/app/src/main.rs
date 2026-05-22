@@ -4,6 +4,7 @@ mod http;
 mod telemetry;
 
 use config::Config;
+use http::StatusSnapshot;
 use solana_yellowstone_storage::{
     CursorStore, cursor::PostgresCursorStore, postgres::PostgresEventWriter,
 };
@@ -67,4 +68,13 @@ async fn main() {
         summary.write_summary.deduplicated,
         summary.last_persisted_slot,
     );
+
+    let status = StatusSnapshot::from_pipeline(config.stream_name.clone(), summary);
+    println!("serving http endpoints on {}", config.http_addr);
+    http::serve(&config.http_addr, status)
+        .await
+        .unwrap_or_else(|err| {
+            eprintln!("http error: {err}");
+            std::process::exit(6);
+        });
 }
