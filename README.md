@@ -57,6 +57,7 @@ Current limitations:
 - Live Yellowstone gRPC integration is not implemented yet.
 - Replay currently loads the configured JSONL file before entering the bounded channel.
 - Cursor progress is based on the maximum slot in each successful batch; this is not a gap-free live recovery guarantee.
+- Current `event_id` identity is minimal: `slot`, `signature`, `program_id`, `account`, and `event_type`. It ignores payload, instruction index, write version, and source-specific indexes, so it must be revisited before live Yellowstone ingestion.
 - Exactly-once upstream delivery is not claimed.
 - Provider-dependent replay, start-slot, reconnect, and gap semantics are future work.
 - Redis, ClickHouse, Kafka, and domain-specific decoders are not part of the MVP path.

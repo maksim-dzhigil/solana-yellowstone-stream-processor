@@ -258,4 +258,50 @@ mod tests {
             "slot=42|signature=sig-1|program=program-1|account=|type=transaction"
         );
     }
+
+    #[test]
+    fn event_id_currently_ignores_payload_differences() {
+        let first = NormalizedEvent::new(
+            42,
+            Some("sig-1".to_owned()),
+            Some("program-1".to_owned()),
+            None,
+            EventType::new(EventType::TRANSACTION).expect("event type should be valid"),
+            json!({ "instruction_index": 0 }),
+        );
+        let second = NormalizedEvent::new(
+            42,
+            Some("sig-1".to_owned()),
+            Some("program-1".to_owned()),
+            None,
+            EventType::new(EventType::TRANSACTION).expect("event type should be valid"),
+            json!({ "instruction_index": 1 }),
+        );
+
+        assert_ne!(first.payload, second.payload);
+        assert_eq!(first.event_id(), second.event_id());
+    }
+
+    #[test]
+    fn event_id_currently_treats_none_and_empty_identity_fields_as_equal() {
+        let missing_account = NormalizedEvent::new(
+            42,
+            Some("sig-1".to_owned()),
+            Some("program-1".to_owned()),
+            None,
+            EventType::new(EventType::TRANSACTION).expect("event type should be valid"),
+            json!({}),
+        );
+        let empty_account = NormalizedEvent::new(
+            42,
+            Some("sig-1".to_owned()),
+            Some("program-1".to_owned()),
+            Some(String::new()),
+            EventType::new(EventType::TRANSACTION).expect("event type should be valid"),
+            json!({}),
+        );
+
+        assert_ne!(missing_account.account, empty_account.account);
+        assert_eq!(missing_account.event_id(), empty_account.event_id());
+    }
 }
