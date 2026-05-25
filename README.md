@@ -41,6 +41,7 @@ flowchart LR
 - Structured logs and graceful shutdown.
 - One-shot replay mode for CI, smoke tests, and imports.
 - Yellowstone normalization boundary for mapping source-like events into the internal identity contract.
+- Optional `yellowstone-proto` feature for mapping real Yellowstone protobuf updates into normalized events.
 - Unit, integration, HTTP contract, binary, and PostgreSQL-backed tests.
 
 ## Guarantees And Limitations
@@ -65,7 +66,7 @@ Current event identity is versioned and source-oriented:
 
 Current limitations:
 
-- Live Yellowstone gRPC client, subscription, and reconnect loop are not implemented yet.
+- Live Yellowstone gRPC client, subscription, and reconnect loop are not implemented yet; current proto support is normalization-only.
 - Replay currently loads the configured JSONL file before entering the bounded channel.
 - Cursor progress is based on the maximum slot in each successful batch; this is not a gap-free live recovery guarantee.
 - `event_id` is generated from typed event identity, not payload; payload changes are audit/debug concerns, not source identity changes.

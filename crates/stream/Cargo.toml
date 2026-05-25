@@ -6,8 +6,13 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
+[features]
+yellowstone-proto = ["dep:bs58", "dep:yellowstone-grpc-proto"]
+
 [dependencies]
+bs58 = { version = "0.5", optional = true }
 serde_json = "1"
+yellowstone-grpc-proto = { version = "12.4.0", default-features = false, optional = true }
 solana-yellowstone-domain = { path = "../domain" }
 tokio = { version = "1", features = ["rt", "sync"] }
 solana-yellowstone-storage = { path = "../storage" }
