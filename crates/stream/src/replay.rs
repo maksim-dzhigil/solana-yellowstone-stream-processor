@@ -132,50 +132,50 @@ mod tests {
 
     #[test]
     fn reads_valid_jsonl_events() {
-        let first = r#"{"slot":1,"signature":"sig-1","program_id":"program-1","account":null,"event_type":"transaction","payload":{"index":1}}"#;
-        let second = r#"{"slot":2,"signature":"sig-2","program_id":"program-1","account":null,"event_type":"transaction","payload":{"index":2}}"#;
+        let first = r#"{"identity":{"kind":"transaction","cluster":"localnet","slot":1,"signature":"sig-1","index":0},"payload":{"index":1}}"#;
+        let second = r#"{"identity":{"kind":"transaction","cluster":"localnet","slot":2,"signature":"sig-2","index":0},"payload":{"index":2}}"#;
         let path = write_jsonl_fixture(&[first, second]);
 
         let events = read_jsonl_events(&path).expect("events should read");
 
         assert_eq!(events.len(), 2);
-        assert_eq!(events[0].slot, 1);
-        assert_eq!(events[1].slot, 2);
+        assert_eq!(events[0].slot(), 1);
+        assert_eq!(events[1].slot(), 2);
 
         fs::remove_file(path).expect("remove fixture");
     }
 
     #[test]
     fn reads_jsonl_without_trailing_newline() {
-        let line = r#"{"slot":1,"signature":"sig-1","program_id":"program-1","account":null,"event_type":"transaction","payload":{"index":1}}"#;
+        let line = r#"{"identity":{"kind":"transaction","cluster":"localnet","slot":1,"signature":"sig-1","index":0},"payload":{"index":1}}"#;
         let path = write_temp_fixture(line);
 
         let events = read_jsonl_events(&path).expect("events should read");
 
         assert_eq!(events.len(), 1);
-        assert_eq!(events[0].slot, 1);
+        assert_eq!(events[0].slot(), 1);
 
         fs::remove_file(path).expect("remove fixture");
     }
 
     #[test]
     fn reads_jsonl_with_crlf_line_endings() {
-        let first = r#"{"slot":1,"signature":"sig-1","program_id":"program-1","account":null,"event_type":"transaction","payload":{"index":1}}"#;
-        let second = r#"{"slot":2,"signature":"sig-2","program_id":"program-1","account":null,"event_type":"transaction","payload":{"index":2}}"#;
+        let first = r#"{"identity":{"kind":"transaction","cluster":"localnet","slot":1,"signature":"sig-1","index":0},"payload":{"index":1}}"#;
+        let second = r#"{"identity":{"kind":"transaction","cluster":"localnet","slot":2,"signature":"sig-2","index":0},"payload":{"index":2}}"#;
         let path = write_temp_fixture(&format!("{first}\r\n{second}\r\n"));
 
         let events = read_jsonl_events(&path).expect("events should read");
 
         assert_eq!(events.len(), 2);
-        assert_eq!(events[0].slot, 1);
-        assert_eq!(events[1].slot, 2);
+        assert_eq!(events[0].slot(), 1);
+        assert_eq!(events[1].slot(), 2);
 
         fs::remove_file(path).expect("remove fixture");
     }
 
     #[test]
     fn rejects_blank_lines_with_line_number() {
-        let valid = r#"{"slot":1,"signature":"sig-1","program_id":"program-1","account":null,"event_type":"transaction","payload":{}}"#;
+        let valid = r#"{"identity":{"kind":"transaction","cluster":"localnet","slot":1,"signature":"sig-1","index":0},"payload":{}}"#;
         let path = write_temp_fixture(&format!("{valid}\n   \n"));
 
         let err = read_jsonl_events(&path).expect_err("blank line should fail");
@@ -190,7 +190,7 @@ mod tests {
 
     #[test]
     fn keeps_duplicate_rows_as_duplicate_events() {
-        let line = r#"{"slot":2,"signature":"sig-2","program_id":"program-1","account":null,"event_type":"transaction","payload":{"index":2}}"#;
+        let line = r#"{"identity":{"kind":"transaction","cluster":"localnet","slot":2,"signature":"sig-2","index":0},"payload":{"index":2}}"#;
         let path = write_jsonl_fixture(&[line, line]);
 
         let events = read_jsonl_events(&path).expect("events should read");
@@ -203,21 +203,21 @@ mod tests {
 
     #[test]
     fn replay_source_implements_event_source_boundary() {
-        let line = r#"{"slot":3,"signature":"sig-3","program_id":"program-1","account":null,"event_type":"transaction","payload":{"index":3}}"#;
+        let line = r#"{"identity":{"kind":"transaction","cluster":"localnet","slot":3,"signature":"sig-3","index":0},"payload":{"index":3}}"#;
         let path = write_jsonl_fixture(&[line]);
         let source = ReplaySource::new(&path);
 
         let events = EventSource::read_events(&source).expect("events should read");
 
         assert_eq!(events.len(), 1);
-        assert_eq!(events[0].slot, 3);
+        assert_eq!(events[0].slot(), 3);
 
         fs::remove_file(path).expect("remove fixture");
     }
 
     #[test]
     fn reports_line_number_for_invalid_json() {
-        let valid = r#"{"slot":1,"signature":"sig-1","program_id":"program-1","account":null,"event_type":"transaction","payload":{}}"#;
+        let valid = r#"{"identity":{"kind":"transaction","cluster":"localnet","slot":1,"signature":"sig-1","index":0},"payload":{}}"#;
         let path = write_jsonl_fixture(&[valid, "not-json"]);
 
         let err = read_jsonl_events(&path).expect_err("invalid line should fail");

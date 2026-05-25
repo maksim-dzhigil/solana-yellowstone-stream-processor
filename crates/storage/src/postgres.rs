@@ -51,12 +51,14 @@ impl EventWriter for PostgresEventWriter {
             .collect::<Result<Vec<_>, _>>()?;
 
         let mut query = QueryBuilder::<Postgres>::new(
-            "INSERT INTO events (event_id, slot, signature, program_id, account, event_type, payload) ",
+            "INSERT INTO events (event_id, identity_version, identity, slot, signature, program_id, account, event_type, payload) ",
         );
 
         query.push_values(rows.iter(), |mut builder, row| {
             builder
                 .push_bind(&row.event_id)
+                .push_bind(row.identity_version)
+                .push_bind(&row.identity)
                 .push_bind(row.slot)
                 .push_bind(&row.signature)
                 .push_bind(&row.program_id)
@@ -136,6 +138,8 @@ impl std::error::Error for PostgresWriteError {
 #[derive(Debug)]
 struct EventRow {
     event_id: String,
+    identity_version: i16,
+    identity: Value,
     slot: i64,
     signature: Option<String>,
     program_id: Option<String>,
@@ -148,16 +152,21 @@ impl TryFrom<&NormalizedEvent> for EventRow {
     type Error = PostgresWriteError;
 
     fn try_from(event: &NormalizedEvent) -> Result<Self, Self::Error> {
-        let slot = i64::try_from(event.slot)
-            .map_err(|_| PostgresWriteError::SlotOutOfRange { slot: event.slot })?;
+        let event_slot = event.slot();
+        let slot = i64::try_from(event_slot)
+            .map_err(|_| PostgresWriteError::SlotOutOfRange { slot: event_slot })?;
 
         Ok(Self {
             event_id: event.event_id(),
+            identity_version: i16::try_from(event.identity_version())
+                .expect("identity version fits i16"),
+            identity: serde_json::to_value(&event.identity)
+                .expect("event identity should serialize"),
             slot,
-            signature: event.signature.clone(),
-            program_id: event.program_id.clone(),
-            account: event.account.clone(),
-            event_type: event.event_type.as_str().to_owned(),
+            signature: event.signature().map(str::to_owned),
+            program_id: event.program_id().map(str::to_owned),
+            account: event.account().map(str::to_owned),
+            event_type: event.kind().as_str().to_owned(),
             payload: event.payload.clone(),
         })
     }
@@ -168,7 +177,7 @@ mod tests {
     use super::{EventRow, PostgresEventWriter, PostgresWriteError};
     use crate::EventWriter;
     use serde_json::json;
-    use solana_yellowstone_domain::event::{EventType, NormalizedEvent};
+    use solana_yellowstone_domain::event::{EventIdentity, EventKind, NormalizedEvent};
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static EVENT_ID: AtomicU64 = AtomicU64::new(0);
@@ -206,10 +215,7 @@ mod tests {
 
         let persisted_count: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE signature = ANY($1)")
-                .bind(vec![
-                    first.signature.as_deref(),
-                    second.signature.as_deref(),
-                ])
+                .bind(vec![first.signature(), second.signature()])
                 .fetch_one(&writer.pool)
                 .await
                 .expect("count query should succeed");
@@ -222,11 +228,12 @@ mod tests {
         let signature = format!("postgres-test-{}-{id}", std::process::id());
 
         NormalizedEvent::new(
-            slot,
-            Some(signature),
-            Some("program-1".to_owned()),
-            None,
-            EventType::new(EventType::TRANSACTION).expect("event type should be valid"),
+            EventIdentity::Transaction {
+                cluster: "localnet".to_owned(),
+                slot,
+                signature,
+                index: id,
+            },
             json!({ "source": "postgres-test", "id": id }),
         )
     }
@@ -234,32 +241,41 @@ mod tests {
     #[test]
     fn converts_normalized_event_to_postgres_row() {
         let event = NormalizedEvent::new(
-            42,
-            Some("sig-1".to_owned()),
-            Some("program-1".to_owned()),
-            None,
-            EventType::new(EventType::TRANSACTION).expect("event type should be valid"),
+            EventIdentity::Instruction {
+                cluster: "localnet".to_owned(),
+                slot: 42,
+                signature: "sig-1".to_owned(),
+                transaction_index: 7,
+                instruction_index: 0,
+                inner_instruction_index: None,
+                program_id: "program-1".to_owned(),
+            },
             json!({ "source": "test" }),
         );
 
         let row = EventRow::try_from(&event).expect("event should convert");
 
         assert_eq!(row.event_id, event.event_id());
+        assert_eq!(row.identity_version, 1);
+        assert_eq!(
+            row.identity,
+            serde_json::to_value(&event.identity).expect("serialize identity")
+        );
         assert_eq!(row.slot, 42);
         assert_eq!(row.signature.as_deref(), Some("sig-1"));
         assert_eq!(row.program_id.as_deref(), Some("program-1"));
-        assert_eq!(row.event_type, EventType::TRANSACTION);
+        assert_eq!(row.event_type, EventKind::Instruction.as_str());
         assert_eq!(row.payload, json!({ "source": "test" }));
     }
 
     #[test]
     fn rejects_slots_that_do_not_fit_postgres_bigint() {
         let event = NormalizedEvent::new(
-            u64::MAX,
-            None,
-            None,
-            None,
-            EventType::new(EventType::SLOT).expect("event type should be valid"),
+            EventIdentity::Slot {
+                cluster: "localnet".to_owned(),
+                slot: u64::MAX,
+                status: solana_yellowstone_domain::event::SlotStatus::Processed,
+            },
             json!({}),
         );
 

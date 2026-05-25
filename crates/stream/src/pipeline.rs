@@ -141,7 +141,7 @@ where
 }
 
 fn should_skip_event(event: &NormalizedEvent, resume_after_slot: Option<u64>) -> bool {
-    resume_after_slot.is_some_and(|slot| event.slot <= slot)
+    resume_after_slot.is_some_and(|slot| event.slot() <= slot)
 }
 
 async fn write_batch<W, C>(
@@ -155,7 +155,7 @@ where
     W: EventWriter + Sync,
     C: CursorStore + Sync,
 {
-    let last_slot = batch.iter().map(|event| event.slot).max();
+    let last_slot = batch.iter().map(|event| event.slot()).max();
     let write_summary = writer
         .write_batch(batch)
         .await
@@ -186,7 +186,7 @@ mod tests {
     };
     use async_trait::async_trait;
     use serde_json::json;
-    use solana_yellowstone_domain::event::{EventType, NormalizedEvent};
+    use solana_yellowstone_domain::event::{EventIdentity, NormalizedEvent};
     use solana_yellowstone_storage::{
         CursorStore, EventWriter, WriteSummary, cursor::StreamCursor,
     };
@@ -299,11 +299,12 @@ mod tests {
 
     fn event(slot: u64) -> NormalizedEvent {
         NormalizedEvent::new(
-            slot,
-            Some(format!("sig-{slot}")),
-            Some("program-1".to_owned()),
-            None,
-            EventType::new(EventType::TRANSACTION).expect("static event type should be valid"),
+            EventIdentity::Transaction {
+                cluster: "localnet".to_owned(),
+                slot,
+                signature: format!("sig-{slot}"),
+                index: slot,
+            },
             json!({ "slot": slot }),
         )
     }

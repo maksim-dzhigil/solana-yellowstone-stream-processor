@@ -70,10 +70,10 @@ fn write_replay_fixture() -> PathBuf {
     let unique_prefix = unique_name("binary-replay");
     let path = std::env::temp_dir().join(format!("{unique_prefix}.jsonl"));
     let first = format!(
-        r#"{{"slot":1,"signature":"{unique_prefix}-sig-1","program_id":"program-1","account":null,"event_type":"transaction","payload":{{"index":1}}}}"#
+        r#"{{"identity":{{"kind":"transaction","cluster":"localnet","slot":1,"signature":"{unique_prefix}-sig-1","index":0}},"payload":{{"index":1}}}}"#
     );
     let second = format!(
-        r#"{{"slot":2,"signature":"{unique_prefix}-sig-2","program_id":"program-1","account":null,"event_type":"transaction","payload":{{"index":2}}}}"#
+        r#"{{"identity":{{"kind":"transaction","cluster":"localnet","slot":2,"signature":"{unique_prefix}-sig-2","index":0}},"payload":{{"index":2}}}}"#
     );
 
     fs::write(&path, format!("{first}\n{second}\n{second}\n")).expect("write replay fixture");

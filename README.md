@@ -35,7 +35,7 @@ flowchart LR
 - Normalized internal event model.
 - Bounded channel pipeline.
 - PostgreSQL migrations and batch inserts.
-- Idempotent writes via stable `event_id` and `ON CONFLICT DO NOTHING`.
+- Idempotent writes via `event_id` derived from typed source identity and `ON CONFLICT DO NOTHING`.
 - Cursor read, resume, and update after successful batch persistence.
 - `/healthz`, `/readyz`, `/status`, and `/metrics`.
 - Structured logs and graceful shutdown.
@@ -52,12 +52,22 @@ Current guarantees:
 - Bounded channel between replay producer and pipeline consumer.
 - PostgreSQL is the durable source of truth for events and cursor state.
 
+
+Current event identity is versioned and source-oriented:
+
+- transaction: `cluster`, `slot`, `signature`, `index`;
+- account: `cluster`, `slot`, `account`, `write_version`, optional `txn_signature`, `is_startup`;
+- instruction: `cluster`, `slot`, `signature`, `transaction_index`, `instruction_index`, optional `inner_instruction_index`, `program_id`;
+- slot: `cluster`, `slot`, `status`;
+- block: `cluster`, `slot`, `blockhash`;
+- entry: `cluster`, `slot`, `index`.
+
 Current limitations:
 
 - Live Yellowstone gRPC integration is not implemented yet.
 - Replay currently loads the configured JSONL file before entering the bounded channel.
 - Cursor progress is based on the maximum slot in each successful batch; this is not a gap-free live recovery guarantee.
-- Current `event_id` identity is minimal: `slot`, `signature`, `program_id`, `account`, and `event_type`. It ignores payload, instruction index, write version, and source-specific indexes, so it must be revisited before live Yellowstone ingestion.
+- `event_id` is generated from typed event identity, not payload; payload changes are audit/debug concerns, not source identity changes.
 - Exactly-once upstream delivery is not claimed.
 - Provider-dependent replay, start-slot, reconnect, and gap semantics are future work.
 - Redis, ClickHouse, Kafka, and domain-specific decoders are not part of the MVP path.
