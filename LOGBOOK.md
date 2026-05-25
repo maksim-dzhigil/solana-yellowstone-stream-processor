@@ -1,3 +1,11 @@
+## 2026-05-25
+
+- Added optional Yellowstone protobuf mapping from real `SubscribeUpdate` messages into normalized event identities.
+- Added the first Yellowstone normalization boundary for mapping source-like events into `NormalizedEvent` without a live gRPC client.
+- Replaced the old minimal `event_id` contract with typed source-oriented event identities and versioned canonical hash IDs.
+- Added identity storage to the initial PostgreSQL schema and updated replay, pipeline, storage, fixtures, tests, and README around the new contract.
+- Verified the clean schema by recreating local PostgreSQL and running the full `make verify` gate.
+
 ## 2026-05-22
 
 - Verified README local workflow commands and HTTP endpoint smoke behavior.
