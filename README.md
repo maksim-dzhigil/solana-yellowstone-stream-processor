@@ -40,6 +40,7 @@ flowchart LR
 - `/healthz`, `/readyz`, `/status`, and `/metrics`.
 - Structured logs and graceful shutdown.
 - One-shot replay mode for CI, smoke tests, and imports.
+- Yellowstone normalization boundary for mapping source-like events into the internal identity contract.
 - Unit, integration, HTTP contract, binary, and PostgreSQL-backed tests.
 
 ## Guarantees And Limitations
@@ -64,7 +65,7 @@ Current event identity is versioned and source-oriented:
 
 Current limitations:
 
-- Live Yellowstone gRPC integration is not implemented yet.
+- Live Yellowstone gRPC client, subscription, and reconnect loop are not implemented yet.
 - Replay currently loads the configured JSONL file before entering the bounded channel.
 - Cursor progress is based on the maximum slot in each successful batch; this is not a gap-free live recovery guarantee.
 - `event_id` is generated from typed event identity, not payload; payload changes are audit/debug concerns, not source identity changes.

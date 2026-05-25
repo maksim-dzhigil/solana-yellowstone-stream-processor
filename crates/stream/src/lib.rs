@@ -2,6 +2,7 @@ pub mod batcher;
 pub mod pipeline;
 pub mod replay;
 pub mod source;
+pub mod yellowstone;
 
 #[cfg(test)]
 mod tests {
