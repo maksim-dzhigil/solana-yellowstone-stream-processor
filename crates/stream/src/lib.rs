@@ -3,6 +3,8 @@ pub mod pipeline;
 pub mod replay;
 pub mod source;
 pub mod yellowstone;
+#[cfg(feature = "yellowstone-live")]
+pub mod yellowstone_live;
 
 #[cfg(test)]
 mod tests {
