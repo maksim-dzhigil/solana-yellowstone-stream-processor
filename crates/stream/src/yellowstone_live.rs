@@ -13,7 +13,7 @@ use yellowstone_grpc_proto::tonic;
 
 const DEFAULT_FILTER_NAME: &str = "default";
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct YellowstoneGrpcConfig {
     pub endpoint: String,
     pub x_token: Option<String>,
@@ -25,6 +25,23 @@ pub struct YellowstoneGrpcConfig {
     pub subscribe_transactions: bool,
     pub subscribe_blocks: bool,
     pub subscribe_entries: bool,
+}
+
+impl fmt::Debug for YellowstoneGrpcConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("YellowstoneGrpcConfig")
+            .field("endpoint_configured", &!self.endpoint.is_empty())
+            .field("x_token_configured", &self.x_token.is_some())
+            .field("cluster", &self.cluster)
+            .field("commitment", &self.commitment)
+            .field("from_slot", &self.from_slot)
+            .field("filter_name", &self.filter_name)
+            .field("subscribe_slots", &self.subscribe_slots)
+            .field("subscribe_transactions", &self.subscribe_transactions)
+            .field("subscribe_blocks", &self.subscribe_blocks)
+            .field("subscribe_entries", &self.subscribe_entries)
+            .finish()
+    }
 }
 
 impl YellowstoneGrpcConfig {
@@ -207,9 +224,17 @@ impl fmt::Display for YellowstoneGrpcError {
             Self::InvalidMetadataValue(err) => {
                 write!(f, "invalid yellowstone x-token metadata: {err}")
             }
-            Self::Connect(err) => write!(f, "failed to connect to yellowstone endpoint: {err}"),
-            Self::Subscribe(err) => write!(f, "yellowstone subscribe failed: {err}"),
-            Self::Receive(err) => write!(f, "yellowstone stream receive failed: {err}"),
+            Self::Connect(_) => f.write_str("failed to connect to yellowstone endpoint"),
+            Self::Subscribe(err) => write!(
+                f,
+                "yellowstone subscribe failed with gRPC status {:?}",
+                err.code()
+            ),
+            Self::Receive(err) => write!(
+                f,
+                "yellowstone stream receive failed with gRPC status {:?}",
+                err.code()
+            ),
             Self::Normalize(err) => write!(f, "yellowstone update normalization failed: {err}"),
             Self::ReceiverClosed => f.write_str("yellowstone event receiver closed"),
         }
@@ -270,6 +295,50 @@ mod tests {
         assert!(request.entry.contains_key("live"));
         assert_eq!(request.commitment, Some(CommitmentLevel::Finalized as i32));
         assert_eq!(request.from_slot, Some(42));
+    }
+
+    #[test]
+    fn debug_does_not_include_endpoint_or_token() {
+        let mut config = YellowstoneGrpcConfig::slots_only(
+            "https://provider.example/secret-path?api_key=endpoint-secret",
+            "mainnet-beta",
+        );
+        config.x_token = Some("yellowstone-secret-token".to_owned());
+
+        let debug = format!("{config:?}");
+
+        assert!(debug.contains("endpoint_configured"));
+        assert!(debug.contains("x_token_configured"));
+        assert!(!debug.contains("provider.example"));
+        assert!(!debug.contains("secret-path"));
+        assert!(!debug.contains("endpoint-secret"));
+        assert!(!debug.contains("yellowstone-secret-token"));
+    }
+
+    #[test]
+    fn display_redacts_external_grpc_error_details() {
+        let subscribe = YellowstoneGrpcError::Subscribe(
+            yellowstone_grpc_proto::tonic::Status::unauthenticated(
+                "token yellowstone-secret-token rejected by provider.example",
+            ),
+        );
+        let receive =
+            YellowstoneGrpcError::Receive(yellowstone_grpc_proto::tonic::Status::internal(
+                "provider.example leaked endpoint-secret",
+            ));
+
+        assert_eq!(
+            subscribe.to_string(),
+            "yellowstone subscribe failed with gRPC status Unauthenticated"
+        );
+        assert_eq!(
+            receive.to_string(),
+            "yellowstone stream receive failed with gRPC status Internal"
+        );
+        assert!(!subscribe.to_string().contains("yellowstone-secret-token"));
+        assert!(!subscribe.to_string().contains("provider.example"));
+        assert!(!receive.to_string().contains("endpoint-secret"));
+        assert!(!receive.to_string().contains("provider.example"));
     }
 
     #[test]

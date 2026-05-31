@@ -32,7 +32,7 @@ impl From<CliRunMode> for RunMode {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Config {
     pub run_mode: RunMode,
     pub database_url: String,
@@ -46,6 +46,31 @@ pub struct Config {
     pub yellowstone_endpoint: Option<String>,
     pub yellowstone_x_token: Option<String>,
     pub yellowstone_cluster: String,
+}
+
+impl fmt::Debug for Config {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Config")
+            .field("run_mode", &self.run_mode)
+            .field("http_addr", &self.http_addr)
+            .field("rust_log", &self.rust_log)
+            .field("replay_path", &self.replay_path)
+            .field("stream_name", &self.stream_name)
+            .field("exit_after_replay", &self.exit_after_replay)
+            .field("batch_size", &self.batch_size)
+            .field("channel_capacity", &self.channel_capacity)
+            .field("database_url_configured", &!self.database_url.is_empty())
+            .field(
+                "yellowstone_endpoint_configured",
+                &self.yellowstone_endpoint.is_some(),
+            )
+            .field(
+                "yellowstone_x_token_configured",
+                &self.yellowstone_x_token.is_some(),
+            )
+            .field("yellowstone_cluster", &self.yellowstone_cluster)
+            .finish()
+    }
 }
 
 impl Config {
@@ -305,6 +330,29 @@ mod tests {
 
     #[test]
     fn redacted_summary_does_not_include_secret_config_contents() {
+        let config = secret_config();
+
+        let summary = config.redacted_summary();
+
+        assert!(summary.contains("database_url_configured=true"));
+        assert!(summary.contains("yellowstone_endpoint_configured=true"));
+        assert!(summary.contains("yellowstone_x_token_configured=true"));
+        assert_no_secret_config_contents(&summary);
+    }
+
+    #[test]
+    fn debug_does_not_include_secret_config_contents() {
+        let config = secret_config();
+
+        let debug = format!("{config:?}");
+
+        assert!(debug.contains("database_url_configured"));
+        assert!(debug.contains("yellowstone_endpoint_configured"));
+        assert!(debug.contains("yellowstone_x_token_configured"));
+        assert_no_secret_config_contents(&debug);
+    }
+
+    fn secret_config() -> Config {
         let source = FakeEnv::default()
             .with(
                 "DATABASE_URL",
@@ -312,22 +360,21 @@ mod tests {
             )
             .with(
                 "YELLOWSTONE_ENDPOINT",
-                "https://provider.example/secret-path",
+                "https://provider.example/secret-path?api_key=endpoint-secret",
             )
             .with("YELLOWSTONE_X_TOKEN", "yellowstone-secret-token");
-        let config = Config::from_source(&source).expect("config should load");
 
-        let summary = config.redacted_summary();
+        Config::from_source(&source).expect("config should load")
+    }
 
-        assert!(summary.contains("database_url_configured=true"));
-        assert!(summary.contains("yellowstone_endpoint_configured=true"));
-        assert!(summary.contains("yellowstone_x_token_configured=true"));
-        assert!(!summary.contains("postgres://"));
-        assert!(!summary.contains("secret-password"));
-        assert!(!summary.contains("db.example"));
-        assert!(!summary.contains("private_db"));
-        assert!(!summary.contains("provider.example"));
-        assert!(!summary.contains("yellowstone-secret-token"));
+    fn assert_no_secret_config_contents(value: &str) {
+        assert!(!value.contains("postgres://"));
+        assert!(!value.contains("secret-password"));
+        assert!(!value.contains("db.example"));
+        assert!(!value.contains("private_db"));
+        assert!(!value.contains("provider.example"));
+        assert!(!value.contains("endpoint-secret"));
+        assert!(!value.contains("yellowstone-secret-token"));
     }
 
     #[test]
