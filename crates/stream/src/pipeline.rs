@@ -2,6 +2,7 @@ use crate::batcher::Batcher;
 use solana_yellowstone_domain::event::NormalizedEvent;
 use solana_yellowstone_storage::{CursorStore, EventWriter, WriteSummary};
 use std::fmt;
+use std::future::Future;
 use tokio::sync::mpsc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,6 +66,43 @@ where
     }
 }
 
+#[derive(Debug)]
+pub enum ProducerPipelineError<W, C, P> {
+    Pipeline(PipelineError<W, C>),
+    Producer(P),
+    ProducerJoin(tokio::task::JoinError),
+}
+
+impl<W, C, P> fmt::Display for ProducerPipelineError<W, C, P>
+where
+    W: fmt::Display,
+    C: fmt::Display,
+    P: fmt::Display,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Pipeline(err) => write!(f, "{err}"),
+            Self::Producer(err) => write!(f, "event producer failed: {err}"),
+            Self::ProducerJoin(err) => write!(f, "failed to join event producer task: {err}"),
+        }
+    }
+}
+
+impl<W, C, P> std::error::Error for ProducerPipelineError<W, C, P>
+where
+    W: std::error::Error + 'static,
+    C: std::error::Error + 'static,
+    P: std::error::Error + 'static,
+{
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Pipeline(err) => Some(err),
+            Self::Producer(err) => Some(err),
+            Self::ProducerJoin(err) => Some(err),
+        }
+    }
+}
+
 pub async fn run_replay_pipeline<I, W, C>(
     events: I,
     writer: &W,
@@ -89,6 +127,40 @@ where
         (Err(err), _) => Err(err),
         (Ok(_), Err(err)) => Err(err),
         (Ok(summary), Ok(())) => Ok(summary),
+    }
+}
+
+pub async fn run_event_producer_pipeline<P, F, E, W, C>(
+    producer: P,
+    writer: &W,
+    cursor_store: &C,
+    stream_name: &str,
+    config: PipelineConfig,
+) -> Result<PipelineSummary, ProducerPipelineError<W::Error, C::Error, E>>
+where
+    P: FnOnce(mpsc::Sender<NormalizedEvent>) -> F + Send + 'static,
+    F: Future<Output = Result<(), E>> + Send + 'static,
+    E: Send + 'static,
+    W: EventWriter + Sync,
+    C: CursorStore + Sync,
+{
+    let (sender, receiver) = mpsc::channel(config.channel_capacity);
+    let producer = tokio::spawn(producer(sender));
+
+    let result =
+        run_event_receiver_pipeline(receiver, writer, cursor_store, stream_name, config).await;
+
+    match result {
+        Err(err) => {
+            producer.abort();
+            let _ = producer.await;
+            Err(ProducerPipelineError::Pipeline(err))
+        }
+        Ok(summary) => match producer.await {
+            Ok(Ok(())) => Ok(summary),
+            Ok(Err(err)) => Err(ProducerPipelineError::Producer(err)),
+            Err(err) => Err(ProducerPipelineError::ProducerJoin(err)),
+        },
     }
 }
 
@@ -181,8 +253,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        PipelineConfig, PipelineError, run_event_receiver_pipeline, run_replay_pipeline,
-        send_events,
+        PipelineConfig, PipelineError, ProducerPipelineError, run_event_producer_pipeline,
+        run_event_receiver_pipeline, run_replay_pipeline, send_events,
     };
     use async_trait::async_trait;
     use serde_json::json;
@@ -346,6 +418,67 @@ mod tests {
         assert_eq!(summary.write_summary.inserted, 5);
         assert_eq!(summary.write_summary.deduplicated, 0);
         assert_eq!(summary.last_persisted_slot, Some(5));
+    }
+
+    #[tokio::test]
+    async fn producer_pipeline_drives_receiver_pipeline() {
+        let writer = FakeWriter::default();
+        let cursor_store = FakeCursorStore::default();
+
+        let summary = run_event_producer_pipeline(
+            |sender| async move {
+                sender.send(event(1)).await.expect("send first event");
+                sender.send(event(2)).await.expect("send second event");
+                Ok::<(), FakeError>(())
+            },
+            &writer,
+            &cursor_store,
+            "producer",
+            config(2),
+        )
+        .await
+        .expect("producer pipeline should run");
+
+        assert_eq!(
+            *writer.batch_sizes.lock().expect("batch sizes lock"),
+            vec![2]
+        );
+        assert_eq!(
+            *cursor_store.updates.lock().expect("cursor updates lock"),
+            vec![("producer".to_owned(), 2)]
+        );
+        assert_eq!(summary.events_seen, 2);
+        assert_eq!(summary.batches_written, 1);
+        assert_eq!(summary.last_persisted_slot, Some(2));
+    }
+
+    #[tokio::test]
+    async fn producer_pipeline_returns_producer_errors_after_flush() {
+        let writer = FakeWriter::default();
+        let cursor_store = FakeCursorStore::default();
+
+        let err = run_event_producer_pipeline(
+            |sender| async move {
+                sender.send(event(1)).await.expect("send event");
+                Err::<(), FakeError>(FakeError)
+            },
+            &writer,
+            &cursor_store,
+            "producer",
+            config(2),
+        )
+        .await
+        .expect_err("producer error should fail pipeline");
+
+        assert!(matches!(err, ProducerPipelineError::Producer(_)));
+        assert_eq!(
+            *writer.batch_sizes.lock().expect("batch sizes lock"),
+            vec![1]
+        );
+        assert_eq!(
+            *cursor_store.updates.lock().expect("cursor updates lock"),
+            vec![("producer".to_owned(), 1)]
+        );
     }
 
     #[tokio::test]

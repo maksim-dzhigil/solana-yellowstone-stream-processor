@@ -34,6 +34,7 @@ flowchart LR
 - JSONL replay source.
 - Normalized internal event model.
 - Bounded channel pipeline.
+- Reusable async producer-to-pipeline boundary for future live stream clients.
 - PostgreSQL migrations and batch inserts.
 - Idempotent writes via `event_id` derived from typed source identity and `ON CONFLICT DO NOTHING`.
 - Cursor read, resume, and update after successful batch persistence.
