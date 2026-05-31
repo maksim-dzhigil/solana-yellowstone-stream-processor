@@ -4,9 +4,15 @@ use crate::http::{self, StatusSnapshot};
 use solana_yellowstone_storage::{
     CursorStore, cursor::PostgresCursorStore, postgres::PostgresEventWriter,
 };
+#[cfg(feature = "yellowstone-live")]
+use solana_yellowstone_stream::pipeline::run_event_producer_pipeline;
 use solana_yellowstone_stream::pipeline::{PipelineConfig, run_replay_pipeline};
 use solana_yellowstone_stream::replay::ReplaySource;
 use solana_yellowstone_stream::source::EventSource;
+#[cfg(feature = "yellowstone-live")]
+use solana_yellowstone_stream::yellowstone_live::{
+    YellowstoneGrpcConfig, run_yellowstone_grpc_producer,
+};
 use tracing::info;
 
 pub async fn run(config: Config) -> Result<(), AppRunError> {
@@ -88,6 +94,82 @@ async fn run_replay(config: Config) -> Result<(), AppRunError> {
     Ok(())
 }
 
+#[cfg(feature = "yellowstone-live")]
+async fn run_yellowstone(config: Config) -> Result<(), AppRunError> {
+    info!(
+        stream_name = %config.stream_name,
+        yellowstone_endpoint_configured = config.yellowstone_endpoint.is_some(),
+        yellowstone_x_token_configured = config.yellowstone_x_token.is_some(),
+        yellowstone_cluster = %config.yellowstone_cluster,
+        "yellowstone live mode selected"
+    );
+
+    info!("connecting to postgres");
+    let writer = PostgresEventWriter::connect(&config.database_url).await?;
+    info!("postgres initialized");
+
+    let cursor_store = PostgresCursorStore::from_pool(writer.pool().clone());
+    let cursor = cursor_store.get_cursor(&config.stream_name).await?;
+    let resume_after_slot = cursor.as_ref().map(|cursor| cursor.last_persisted_slot);
+
+    if let Some(slot) = resume_after_slot {
+        info!(
+            stream_name = %config.stream_name,
+            last_persisted_slot = slot,
+            "loaded stream cursor"
+        );
+    } else {
+        info!(stream_name = %config.stream_name, "stream cursor not found");
+    }
+
+    let mut yellowstone_config = YellowstoneGrpcConfig::slots_only(
+        config
+            .yellowstone_endpoint
+            .clone()
+            .expect("yellowstone endpoint validated before runtime"),
+        config.yellowstone_cluster.clone(),
+    );
+    yellowstone_config.x_token = config.yellowstone_x_token.clone();
+    yellowstone_config.from_slot = resume_after_slot;
+    yellowstone_config.filter_name = config.stream_name.clone();
+
+    let pipeline_config = PipelineConfig {
+        batch_size: config.batch_size,
+        channel_capacity: config.channel_capacity,
+        resume_after_slot,
+    };
+    info!(
+        stream_name = %config.stream_name,
+        batch_size = config.batch_size,
+        channel_capacity = config.channel_capacity,
+        resume_after_slot = ?pipeline_config.resume_after_slot,
+        "running yellowstone pipeline"
+    );
+
+    let summary = run_event_producer_pipeline(
+        move |sender| run_yellowstone_grpc_producer(yellowstone_config, sender),
+        &writer,
+        &cursor_store,
+        &config.stream_name,
+        pipeline_config,
+    )
+    .await?;
+
+    info!(
+        events_seen = summary.events_seen,
+        events_skipped = summary.events_skipped,
+        batches_written = summary.batches_written,
+        events_attempted = summary.write_summary.attempted,
+        events_inserted = summary.write_summary.inserted,
+        events_deduplicated = summary.write_summary.deduplicated,
+        last_persisted_slot = ?summary.last_persisted_slot,
+        "yellowstone pipeline completed"
+    );
+
+    Ok(())
+}
+
+#[cfg(not(feature = "yellowstone-live"))]
 async fn run_yellowstone(config: Config) -> Result<(), AppRunError> {
     info!(
         stream_name = %config.stream_name,

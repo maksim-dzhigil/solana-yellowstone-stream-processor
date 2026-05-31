@@ -67,7 +67,9 @@ Current event identity is versioned and source-oriented:
 
 Current limitations:
 
-- Live Yellowstone gRPC client, subscription, and reconnect loop are not implemented yet; current proto support is normalization-only.
+- Live Yellowstone gRPC runtime is feature-gated behind `yellowstone-live` and currently uses a conservative slots-only subscription by default.
+- Live HTTP status is still replay-completion style; concurrent live status snapshots are future work.
+- Provider-specific reconnect, replay, and gap recovery semantics are not implemented yet.
 - Replay currently loads the configured JSONL file before entering the bounded channel.
 - Cursor progress is based on the maximum slot in each successful batch; this is not a gap-free live recovery guarantee.
 - `event_id` is generated from typed event identity, not payload; payload changes are audit/debug concerns, not source identity changes.
@@ -101,19 +103,19 @@ Run with explicit replay-local CLI overrides:
 cargo run -p solana-yellowstone-stream-processor -- --replay fixtures/sample_stream.jsonl --stream-name replay --http-addr 127.0.0.1:8080
 ```
 
-Replay is the default runtime mode. The live Yellowstone mode has configuration validation and CLI/env wiring, but the live gRPC runtime is not implemented yet:
+Replay is the default runtime mode. The live Yellowstone runtime is feature-gated behind `yellowstone-live` and currently starts with a conservative slots-only subscription:
 
 ```bash
 RUN_MODE=yellowstone \
 YELLOWSTONE_ENDPOINT=https://provider.example \
 YELLOWSTONE_CLUSTER=mainnet-beta \
-cargo run -p solana-yellowstone-stream-processor
+cargo run -p solana-yellowstone-stream-processor --features yellowstone-live
 ```
 
 Equivalent CLI mode selection:
 
 ```bash
-cargo run -p solana-yellowstone-stream-processor -- --mode yellowstone --yellowstone-endpoint https://provider.example --yellowstone-cluster mainnet-beta
+cargo run -p solana-yellowstone-stream-processor --features yellowstone-live -- --mode yellowstone --yellowstone-endpoint https://provider.example --yellowstone-cluster mainnet-beta
 ```
 
 `DATABASE_URL` is intentionally configured through the environment instead of CLI arguments. The local compose database is exposed on host port `5433`:
@@ -153,6 +155,8 @@ make check
 make test-postgres
 cargo test -p solana-yellowstone-stream-processor --test cli
 cargo test -p solana-yellowstone-stream
+cargo test -p solana-yellowstone-stream-processor --features yellowstone-live
+cargo clippy -p solana-yellowstone-stream-processor --features yellowstone-live --all-targets -- -D warnings
 ```
 
 ## Documentation

@@ -6,6 +6,9 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
+[features]
+yellowstone-live = ["solana-yellowstone-stream/yellowstone-live"]
+
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 axum = "0.8"

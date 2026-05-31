@@ -46,6 +46,7 @@ fn exits_with_config_error_for_yellowstone_mode_without_endpoint() {
         ));
 }
 
+#[cfg(not(feature = "yellowstone-live"))]
 #[test]
 fn exits_with_yellowstone_runtime_placeholder_after_valid_config() {
     command()

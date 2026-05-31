@@ -2,7 +2,11 @@ use crate::http::HttpError;
 use solana_yellowstone_storage::cursor::PostgresCursorError;
 use solana_yellowstone_storage::postgres::{PostgresInitError, PostgresWriteError};
 use solana_yellowstone_stream::pipeline::PipelineError;
+#[cfg(feature = "yellowstone-live")]
+use solana_yellowstone_stream::pipeline::ProducerPipelineError;
 use solana_yellowstone_stream::replay::ReplayReadError;
+#[cfg(feature = "yellowstone-live")]
+use solana_yellowstone_stream::yellowstone_live::YellowstoneGrpcError;
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,7 +61,12 @@ pub enum AppRunError {
     Postgres(PostgresInitError),
     Cursor(PostgresCursorError),
     Pipeline(PipelineError<PostgresWriteError, PostgresCursorError>),
+    #[cfg(feature = "yellowstone-live")]
+    YellowstonePipeline(
+        ProducerPipelineError<PostgresWriteError, PostgresCursorError, YellowstoneGrpcError>,
+    ),
     Http(HttpError),
+    #[cfg(not(feature = "yellowstone-live"))]
     YellowstoneRuntimeNotImplemented,
 }
 
@@ -67,7 +76,10 @@ impl AppRunError {
             Self::Replay(_) => 3,
             Self::Postgres(_) => 4,
             Self::Cursor(_) | Self::Pipeline(_) => 5,
+            #[cfg(feature = "yellowstone-live")]
+            Self::YellowstonePipeline(_) => 5,
             Self::Http(_) => 6,
+            #[cfg(not(feature = "yellowstone-live"))]
             Self::YellowstoneRuntimeNotImplemented => 7,
         }
     }
@@ -80,7 +92,10 @@ impl fmt::Display for AppRunError {
             Self::Postgres(err) => write!(f, "postgres error: {err}"),
             Self::Cursor(err) => write!(f, "cursor error: {err}"),
             Self::Pipeline(err) => write!(f, "pipeline error: {err}"),
+            #[cfg(feature = "yellowstone-live")]
+            Self::YellowstonePipeline(err) => write!(f, "yellowstone pipeline error: {err}"),
             Self::Http(err) => write!(f, "http error: {err}"),
+            #[cfg(not(feature = "yellowstone-live"))]
             Self::YellowstoneRuntimeNotImplemented => {
                 f.write_str("yellowstone live runtime is not implemented yet")
             }
@@ -95,7 +110,10 @@ impl std::error::Error for AppRunError {
             Self::Postgres(err) => Some(err),
             Self::Cursor(err) => Some(err),
             Self::Pipeline(err) => Some(err),
+            #[cfg(feature = "yellowstone-live")]
+            Self::YellowstonePipeline(err) => Some(err),
             Self::Http(err) => Some(err),
+            #[cfg(not(feature = "yellowstone-live"))]
             Self::YellowstoneRuntimeNotImplemented => None,
         }
     }
@@ -125,6 +143,17 @@ impl From<PipelineError<PostgresWriteError, PostgresCursorError>> for AppRunErro
     }
 }
 
+#[cfg(feature = "yellowstone-live")]
+impl From<ProducerPipelineError<PostgresWriteError, PostgresCursorError, YellowstoneGrpcError>>
+    for AppRunError
+{
+    fn from(
+        err: ProducerPipelineError<PostgresWriteError, PostgresCursorError, YellowstoneGrpcError>,
+    ) -> Self {
+        Self::YellowstonePipeline(err)
+    }
+}
+
 impl From<HttpError> for AppRunError {
     fn from(err: HttpError) -> Self {
         Self::Http(err)
@@ -145,6 +174,7 @@ mod tests {
         assert_eq!(err.to_string(), "HTTP_ADDR must not be empty");
     }
 
+    #[cfg(not(feature = "yellowstone-live"))]
     #[test]
     fn app_run_error_maps_yellowstone_runtime_to_exit_code_seven() {
         let err = AppRunError::YellowstoneRuntimeNotImplemented;
