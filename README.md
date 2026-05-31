@@ -1,12 +1,12 @@
 # Solana Yellowstone Stream Processor
 
-Reliability-first Rust service for building an observable Solana ingestion pipeline from replay or future Yellowstone gRPC/Geyser streams to durable storage.
+Reliability-first Rust service for ingesting Solana stream events from replay fixtures or feature-gated Yellowstone gRPC into durable PostgreSQL storage.
 
-Current status: local replay MVP bootstrap. The project currently proves the storage, cursor, deduplication, batching, and observability path without depending on a live Yellowstone provider.
+Current status: replay MVP is the stable default path. Live Yellowstone ingestion exists behind the `yellowstone-live` feature with a conservative slots-only subscription by default; provider reconnect and gap recovery policy are still future work.
 
 ## Architecture
 
-Current MVP path:
+Replay path:
 
 ```mermaid
 flowchart LR
@@ -17,65 +17,78 @@ flowchart LR
     B --> H[Health / Status / Metrics]
 ```
 
-Future live path:
+Feature-gated live path:
 
 ```mermaid
 flowchart LR
-    Y[Yellowstone gRPC] --> S[Subscription Filters]
-    S --> C[Stream Client]
-    C --> N[Normalizer]
-    N --> B[Batcher]
-    B --> P[(PostgreSQL / ClickHouse)]
-    B --> M[Prometheus Metrics]
+    Y[Yellowstone gRPC] --> N[Proto Normalizer]
+    N --> C[Bounded Channel]
+    C --> B[Batcher]
+    B --> P[(PostgreSQL Events)]
+    B --> CUR[(Cursor State)]
 ```
 
-## What Works Now
+## What Works
 
-- JSONL replay source.
-- Normalized internal event model.
-- Bounded channel pipeline.
-- Reusable async producer-to-pipeline boundary for future live stream clients.
-- PostgreSQL migrations and batch inserts.
-- Idempotent writes via `event_id` derived from typed source identity and `ON CONFLICT DO NOTHING`.
-- Cursor read, resume, and update after successful batch persistence.
-- `/healthz`, `/readyz`, `/status`, and `/metrics`.
-- Structured logs and graceful shutdown.
-- One-shot replay mode for CI, smoke tests, and imports.
-- Yellowstone normalization boundary for mapping source-like events into the internal identity contract.
-- Optional `yellowstone-proto` feature for mapping real Yellowstone protobuf updates into normalized events.
-- Unit, integration, HTTP contract, binary, and PostgreSQL-backed tests.
+- JSONL replay ingestion with one-shot and HTTP-serving modes.
+- Feature-gated Yellowstone gRPC producer with `x-token` metadata support.
+- Normalized event model with versioned, source-oriented event identities.
+- Bounded producer-to-pipeline channel, batching, PostgreSQL writes, deduplication, and cursor persistence.
+- Idempotent writes through stable `event_id` values and `ON CONFLICT DO NOTHING`.
+- Replay resume from persisted stream cursor.
+- HTTP `/healthz`, `/readyz`, `/status`, and `/metrics` after replay completion.
+- Structured logs with redacted config/debug/error output for database URLs, Yellowstone endpoints, and tokens.
+- Unit, binary, HTTP contract, integration, and PostgreSQL-backed tests.
 
-## Guarantees And Limitations
+## Event Identity
 
-Current guarantees:
+Current `event_id` values are derived from typed source identity, not payload contents:
 
-- At-least-once processing inside the local replay pipeline.
+- `transaction`: `cluster`, `slot`, `signature`, `index`
+- `account`: `cluster`, `slot`, `account`, `write_version`, optional `txn_signature`, `is_startup`
+- `instruction`: `cluster`, `slot`, `signature`, `transaction_index`, `instruction_index`, optional `inner_instruction_index`, `program_id`
+- `slot`: `cluster`, `slot`, `status`
+- `block`: `cluster`, `slot`, `blockhash`
+- `entry`: `cluster`, `slot`, `index`
+
+## Guarantees
+
+- At-least-once processing inside the local pipeline.
 - Idempotent persistence through stable event IDs and a database unique constraint.
 - Cursor updates only after successful batch persistence.
-- Bounded channel between replay producer and pipeline consumer.
 - PostgreSQL is the durable source of truth for events and cursor state.
+- Replay mode is covered by the full default `make verify` gate.
 
+## Limitations
 
-Current event identity is versioned and source-oriented:
-
-- transaction: `cluster`, `slot`, `signature`, `index`;
-- account: `cluster`, `slot`, `account`, `write_version`, optional `txn_signature`, `is_startup`;
-- instruction: `cluster`, `slot`, `signature`, `transaction_index`, `instruction_index`, optional `inner_instruction_index`, `program_id`;
-- slot: `cluster`, `slot`, `status`;
-- block: `cluster`, `slot`, `blockhash`;
-- entry: `cluster`, `slot`, `index`.
-
-Current limitations:
-
-- Live Yellowstone gRPC runtime is feature-gated behind `yellowstone-live` and currently uses a conservative slots-only subscription by default.
-- Live HTTP status is still replay-completion style; concurrent live status snapshots are future work.
-- Provider-specific reconnect, replay, and gap recovery semantics are not implemented yet.
+- Live Yellowstone mode is available only with `--features yellowstone-live`.
+- Live Yellowstone defaults to slots-only subscription; transaction/block/account filters need explicit future policy.
+- Live mode currently runs ingestion in the foreground and does not serve concurrent HTTP status endpoints.
+- Provider-specific reconnect, replay, start-slot, and gap recovery semantics are not implemented yet.
+- Cursor progress is currently based on the maximum slot in each successful batch; this is not a gap-free live recovery guarantee.
 - Replay currently loads the configured JSONL file before entering the bounded channel.
-- Cursor progress is based on the maximum slot in each successful batch; this is not a gap-free live recovery guarantee.
-- `event_id` is generated from typed event identity, not payload; payload changes are audit/debug concerns, not source identity changes.
 - Exactly-once upstream delivery is not claimed.
-- Provider-dependent replay, start-slot, reconnect, and gap semantics are future work.
-- Redis, ClickHouse, Kafka, and domain-specific decoders are not part of the MVP path.
+- Redis, ClickHouse, Kafka, and program-specific decoders are not part of the current MVP.
+
+## Configuration
+
+Default local configuration is shown in [.env.example](.env.example). The local compose database is exposed on host port `5433`:
+
+```text
+postgres://postgres:postgres@localhost:5433/solana_stream
+```
+
+Important variables:
+
+- `DATABASE_URL`: PostgreSQL connection string.
+- `RUN_MODE`: `replay` or `yellowstone`; default is `replay`.
+- `REPLAY_PATH`: JSONL replay fixture path.
+- `STREAM_NAME`: cursor namespace and metric label.
+- `STREAM_BATCH_SIZE`: batch size for writes.
+- `STREAM_CHANNEL_CAPACITY`: bounded channel capacity.
+- `YELLOWSTONE_ENDPOINT`: required for `RUN_MODE=yellowstone`.
+- `YELLOWSTONE_X_TOKEN`: optional Yellowstone provider token sent as `x-token` metadata.
+- `YELLOWSTONE_CLUSTER`: cluster label used in event identity, default `mainnet-beta`.
 
 ## Local Run
 
@@ -85,25 +98,25 @@ Start PostgreSQL:
 make compose-up
 ```
 
-Run the service with the default replay fixture and keep HTTP endpoints available after replay completes:
+Run replay mode with the default fixture and serve HTTP endpoints after replay completes:
 
 ```bash
 make run
 ```
 
-Run a one-shot replay and exit after persistence:
+Run one-shot replay and exit after persistence:
 
 ```bash
 cargo run -p solana-yellowstone-stream-processor -- --replay fixtures/sample_stream.jsonl --exit-after-replay
 ```
 
-Run with explicit replay-local CLI overrides:
+Run replay with explicit CLI overrides:
 
 ```bash
 cargo run -p solana-yellowstone-stream-processor -- --replay fixtures/sample_stream.jsonl --stream-name replay --http-addr 127.0.0.1:8080
 ```
 
-Replay is the default runtime mode. The live Yellowstone runtime is feature-gated behind `yellowstone-live` and currently starts with a conservative slots-only subscription:
+Run feature-gated Yellowstone live mode:
 
 ```bash
 RUN_MODE=yellowstone \
@@ -118,13 +131,7 @@ Equivalent CLI mode selection:
 cargo run -p solana-yellowstone-stream-processor --features yellowstone-live -- --mode yellowstone --yellowstone-endpoint https://provider.example --yellowstone-cluster mainnet-beta
 ```
 
-`DATABASE_URL` is intentionally configured through the environment instead of CLI arguments. The local compose database is exposed on host port `5433`:
-
-```text
-postgres://postgres:postgres@localhost:5433/solana_stream
-```
-
-Expected local endpoints after replay completes without `--exit-after-replay`:
+Replay HTTP endpoints:
 
 ```text
 GET /healthz
@@ -135,18 +142,13 @@ GET /metrics
 
 ## Verification
 
-Use the full local quality gate before committing CI-bound changes:
+Full local quality gate:
 
 ```bash
 make verify
 ```
 
-It runs:
-
-- `cargo fmt --all -- --check`
-- `cargo test --workspace`
-- `cargo clippy --workspace --all-targets -- -D warnings`
-- PostgreSQL-backed ignored tests through `make test-postgres`
+It runs formatting, workspace tests, clippy, and PostgreSQL-backed ignored tests.
 
 Useful focused commands:
 
@@ -155,7 +157,9 @@ make check
 make test-postgres
 cargo test -p solana-yellowstone-stream-processor --test cli
 cargo test -p solana-yellowstone-stream
+cargo test -p solana-yellowstone-stream --features yellowstone-live
 cargo test -p solana-yellowstone-stream-processor --features yellowstone-live
+cargo clippy -p solana-yellowstone-stream --features yellowstone-live --all-targets -- -D warnings
 cargo clippy -p solana-yellowstone-stream-processor --features yellowstone-live --all-targets -- -D warnings
 ```
 
