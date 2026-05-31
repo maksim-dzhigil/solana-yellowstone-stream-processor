@@ -1,3 +1,10 @@
+## 2026-05-31
+
+- Hardened secret redaction for config/debug/error output so database URLs, Yellowstone endpoints, and tokens are not logged accidentally.
+- Wired app Yellowstone mode to the feature-gated live gRPC producer and existing bounded producer pipeline.
+- Added feature-gated Yellowstone gRPC producer support with conservative slots-only defaults, x-token metadata, and proto normalization into `NormalizedEvent`.
+- Added reusable async producer-to-pipeline boundary and verified the full local quality gate, including PostgreSQL-backed tests.
+
 ## 2026-05-25
 
 - Added optional Yellowstone protobuf mapping from real `SubscribeUpdate` messages into normalized event identities.
