@@ -7,18 +7,41 @@ use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfigError {
-    Empty { key: &'static str },
-    InvalidUsize { key: &'static str, value: String },
-    NotUnicode { key: &'static str },
-    NonPositive { key: &'static str },
+    Empty {
+        key: &'static str,
+    },
+    InvalidRunMode {
+        key: &'static str,
+        value: String,
+    },
+    InvalidUsize {
+        key: &'static str,
+        value: String,
+    },
+    MissingRequired {
+        key: &'static str,
+        context: &'static str,
+    },
+    NotUnicode {
+        key: &'static str,
+    },
+    NonPositive {
+        key: &'static str,
+    },
 }
 
 impl fmt::Display for ConfigError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Empty { key } => write!(f, "{key} must not be empty"),
+            Self::InvalidRunMode { key, value } => {
+                write!(f, "{key} must be replay or yellowstone, got {value:?}")
+            }
             Self::InvalidUsize { key, value } => {
                 write!(f, "{key} must be a positive integer, got {value:?}")
+            }
+            Self::MissingRequired { key, context } => {
+                write!(f, "{key} is required when {context}")
             }
             Self::NotUnicode { key } => write!(f, "{key} contains non-unicode data"),
             Self::NonPositive { key } => write!(f, "{key} must be greater than zero"),
@@ -35,6 +58,7 @@ pub enum AppRunError {
     Cursor(PostgresCursorError),
     Pipeline(PipelineError<PostgresWriteError, PostgresCursorError>),
     Http(HttpError),
+    YellowstoneRuntimeNotImplemented,
 }
 
 impl AppRunError {
@@ -44,6 +68,7 @@ impl AppRunError {
             Self::Postgres(_) => 4,
             Self::Cursor(_) | Self::Pipeline(_) => 5,
             Self::Http(_) => 6,
+            Self::YellowstoneRuntimeNotImplemented => 7,
         }
     }
 }
@@ -56,6 +81,9 @@ impl fmt::Display for AppRunError {
             Self::Cursor(err) => write!(f, "cursor error: {err}"),
             Self::Pipeline(err) => write!(f, "pipeline error: {err}"),
             Self::Http(err) => write!(f, "http error: {err}"),
+            Self::YellowstoneRuntimeNotImplemented => {
+                f.write_str("yellowstone live runtime is not implemented yet")
+            }
         }
     }
 }
@@ -68,6 +96,7 @@ impl std::error::Error for AppRunError {
             Self::Cursor(err) => Some(err),
             Self::Pipeline(err) => Some(err),
             Self::Http(err) => Some(err),
+            Self::YellowstoneRuntimeNotImplemented => None,
         }
     }
 }
@@ -114,6 +143,17 @@ mod tests {
         let err = ConfigError::Empty { key: "HTTP_ADDR" };
 
         assert_eq!(err.to_string(), "HTTP_ADDR must not be empty");
+    }
+
+    #[test]
+    fn app_run_error_maps_yellowstone_runtime_to_exit_code_seven() {
+        let err = AppRunError::YellowstoneRuntimeNotImplemented;
+
+        assert_eq!(err.exit_code(), 7);
+        assert_eq!(
+            err.to_string(),
+            "yellowstone live runtime is not implemented yet"
+        );
     }
 
     #[test]

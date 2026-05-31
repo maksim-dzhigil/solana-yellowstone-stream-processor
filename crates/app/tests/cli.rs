@@ -35,6 +35,33 @@ fn exits_with_replay_error_for_missing_replay_file() {
 }
 
 #[test]
+fn exits_with_config_error_for_yellowstone_mode_without_endpoint() {
+    command()
+        .arg("--mode")
+        .arg("yellowstone")
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "configuration error: YELLOWSTONE_ENDPOINT is required when RUN_MODE=yellowstone",
+        ));
+}
+
+#[test]
+fn exits_with_yellowstone_runtime_placeholder_after_valid_config() {
+    command()
+        .arg("--mode")
+        .arg("yellowstone")
+        .arg("--yellowstone-endpoint")
+        .arg("https://provider.example")
+        .assert()
+        .code(7)
+        .stdout(predicate::str::contains("yellowstone live mode selected"))
+        .stdout(predicate::str::contains(
+            "yellowstone live runtime is not implemented yet",
+        ));
+}
+
+#[test]
 #[ignore = "requires local postgres; run `make test-postgres`"]
 fn exits_successfully_after_one_shot_replay() {
     let database_url = std::env::var("TEST_DATABASE_URL")

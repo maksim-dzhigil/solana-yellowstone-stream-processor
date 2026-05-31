@@ -101,6 +101,21 @@ Run with explicit replay-local CLI overrides:
 cargo run -p solana-yellowstone-stream-processor -- --replay fixtures/sample_stream.jsonl --stream-name replay --http-addr 127.0.0.1:8080
 ```
 
+Replay is the default runtime mode. The live Yellowstone mode has configuration validation and CLI/env wiring, but the live gRPC runtime is not implemented yet:
+
+```bash
+RUN_MODE=yellowstone \
+YELLOWSTONE_ENDPOINT=https://provider.example \
+YELLOWSTONE_CLUSTER=mainnet-beta \
+cargo run -p solana-yellowstone-stream-processor
+```
+
+Equivalent CLI mode selection:
+
+```bash
+cargo run -p solana-yellowstone-stream-processor -- --mode yellowstone --yellowstone-endpoint https://provider.example --yellowstone-cluster mainnet-beta
+```
+
 `DATABASE_URL` is intentionally configured through the environment instead of CLI arguments. The local compose database is exposed on host port `5433`:
 
 ```text

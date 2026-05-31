@@ -1,4 +1,4 @@
-use crate::config::Config;
+use crate::config::{Config, RunMode};
 use crate::error::AppRunError;
 use crate::http::{self, StatusSnapshot};
 use solana_yellowstone_storage::{
@@ -12,6 +12,13 @@ use tracing::info;
 pub async fn run(config: Config) -> Result<(), AppRunError> {
     info!(config = %config.redacted_summary(), "configuration loaded");
 
+    match config.run_mode {
+        RunMode::Replay => run_replay(config).await,
+        RunMode::Yellowstone => run_yellowstone(config).await,
+    }
+}
+
+async fn run_replay(config: Config) -> Result<(), AppRunError> {
     let replay = ReplaySource::new(config.replay_path.clone());
     info!(replay_path = %config.replay_path, "reading replay events");
     let events = EventSource::read_events(&replay)?;
@@ -79,4 +86,16 @@ pub async fn run(config: Config) -> Result<(), AppRunError> {
     info!("http server stopped");
 
     Ok(())
+}
+
+async fn run_yellowstone(config: Config) -> Result<(), AppRunError> {
+    info!(
+        stream_name = %config.stream_name,
+        yellowstone_endpoint_configured = config.yellowstone_endpoint.is_some(),
+        yellowstone_x_token_configured = config.yellowstone_x_token.is_some(),
+        yellowstone_cluster = %config.yellowstone_cluster,
+        "yellowstone live mode selected"
+    );
+
+    Err(AppRunError::YellowstoneRuntimeNotImplemented)
 }
