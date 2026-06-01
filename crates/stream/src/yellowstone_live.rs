@@ -51,6 +51,39 @@ impl YellowstoneReconnectConfig {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum YellowstoneGrpcErrorKind {
+    InvalidConfig,
+    InvalidMetadataValue,
+    Connect,
+    Subscribe,
+    Receive,
+    Normalize,
+    ReceiverClosed,
+}
+
+impl YellowstoneGrpcErrorKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::InvalidConfig => "invalid_config",
+            Self::InvalidMetadataValue => "invalid_metadata_value",
+            Self::Connect => "connect",
+            Self::Subscribe => "subscribe",
+            Self::Receive => "receive",
+            Self::Normalize => "normalize",
+            Self::ReceiverClosed => "receiver_closed",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct YellowstoneReconnectEvent {
+    pub retry_attempt: u32,
+    pub delay: Duration,
+    pub error_kind: YellowstoneGrpcErrorKind,
+    pub error_message: String,
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub struct YellowstoneGrpcConfig {
     pub endpoint: String,
@@ -227,6 +260,18 @@ pub async fn run_yellowstone_grpc_producer_with_reconnect(
     reconnect: YellowstoneReconnectConfig,
     sender: mpsc::Sender<NormalizedEvent>,
 ) -> Result<(), YellowstoneGrpcError> {
+    run_yellowstone_grpc_producer_with_reconnect_status(config, reconnect, sender, |_| {}).await
+}
+
+pub async fn run_yellowstone_grpc_producer_with_reconnect_status<O>(
+    config: YellowstoneGrpcConfig,
+    reconnect: YellowstoneReconnectConfig,
+    sender: mpsc::Sender<NormalizedEvent>,
+    mut on_reconnect: O,
+) -> Result<(), YellowstoneGrpcError>
+where
+    O: FnMut(YellowstoneReconnectEvent) + Send,
+{
     let reconnect = reconnect.normalized();
     let mut retry_attempt = 0_u32;
     let mut delay = reconnect.initial_delay;
@@ -244,10 +289,19 @@ pub async fn run_yellowstone_grpc_producer_with_reconnect(
                     return Err(err);
                 }
 
+                let event = YellowstoneReconnectEvent {
+                    retry_attempt,
+                    delay,
+                    error_kind: err.kind(),
+                    error_message: err.to_string(),
+                };
+                on_reconnect(event.clone());
+
                 tracing::warn!(
                     retry_attempt,
                     delay_ms = delay.as_millis(),
-                    error = %err,
+                    error_kind = event.error_kind.as_str(),
+                    error = %event.error_message,
                     "yellowstone producer failed; reconnecting after backoff"
                 );
                 sleep(delay).await;
@@ -337,6 +391,18 @@ impl fmt::Display for YellowstoneGrpcError {
 }
 
 impl YellowstoneGrpcError {
+    pub fn kind(&self) -> YellowstoneGrpcErrorKind {
+        match self {
+            Self::InvalidConfig { .. } => YellowstoneGrpcErrorKind::InvalidConfig,
+            Self::InvalidMetadataValue(_) => YellowstoneGrpcErrorKind::InvalidMetadataValue,
+            Self::Connect(_) => YellowstoneGrpcErrorKind::Connect,
+            Self::Subscribe(_) => YellowstoneGrpcErrorKind::Subscribe,
+            Self::Receive(_) => YellowstoneGrpcErrorKind::Receive,
+            Self::Normalize(_) => YellowstoneGrpcErrorKind::Normalize,
+            Self::ReceiverClosed => YellowstoneGrpcErrorKind::ReceiverClosed,
+        }
+    }
+
     fn is_retryable(&self) -> bool {
         match self {
             Self::Connect(_) => true,

@@ -1,8 +1,8 @@
 use crate::config::{Config, RunMode};
 use crate::error::AppRunError;
-#[cfg(feature = "yellowstone-live")]
-use crate::http::StreamMode;
 use crate::http::{self, StatusSnapshot};
+#[cfg(feature = "yellowstone-live")]
+use crate::http::{LiveProducerStatus, StreamMode};
 use solana_yellowstone_storage::{
     CursorStore, cursor::PostgresCursorStore, postgres::PostgresEventWriter,
 };
@@ -15,7 +15,8 @@ use solana_yellowstone_stream::replay::ReplaySource;
 use solana_yellowstone_stream::source::EventSource;
 #[cfg(feature = "yellowstone-live")]
 use solana_yellowstone_stream::yellowstone_live::{
-    YellowstoneGrpcConfig, YellowstoneReconnectConfig, run_yellowstone_grpc_producer_with_reconnect,
+    YellowstoneGrpcConfig, YellowstoneReconnectConfig,
+    run_yellowstone_grpc_producer_with_reconnect_status,
 };
 #[cfg(feature = "yellowstone-live")]
 use tokio::sync::watch;
@@ -174,7 +175,8 @@ async fn run_yellowstone(config: Config) -> Result<(), AppRunError> {
         StreamMode::Yellowstone,
         config.stream_name.clone(),
         initial_summary,
-    );
+    )
+    .with_live(LiveProducerStatus::default());
     let (status_sender, status_receiver) = http::status_channel(initial_status);
     let status_stream_name = config.stream_name.clone();
 
@@ -183,12 +185,26 @@ async fn run_yellowstone(config: Config) -> Result<(), AppRunError> {
     info!(http_addr = %config.http_addr, "serving yellowstone http endpoints");
     let http_server =
         http::serve_updates_until_shutdown(&config.http_addr, status_receiver, http_shutdown);
+    let reconnect_status_sender = status_sender.clone();
+    let pipeline_status_sender = status_sender.clone();
     let pipeline = run_event_producer_pipeline_with_progress(
         move |sender| {
-            run_yellowstone_grpc_producer_with_reconnect(
+            run_yellowstone_grpc_producer_with_reconnect_status(
                 yellowstone_config,
                 YellowstoneReconnectConfig::default(),
                 sender,
+                move |event| {
+                    let mut status = reconnect_status_sender.borrow().clone();
+                    status.live = Some(LiveProducerStatus::reconnecting(
+                        u64::from(event.retry_attempt),
+                        event.delay.as_millis() as u64,
+                        event.error_kind.as_str(),
+                        event.error_message,
+                    ));
+                    if reconnect_status_sender.send(status).is_err() {
+                        tracing::debug!("yellowstone status receiver dropped");
+                    }
+                },
             )
         },
         &writer,
@@ -196,12 +212,19 @@ async fn run_yellowstone(config: Config) -> Result<(), AppRunError> {
         &config.stream_name,
         pipeline_config,
         move |summary| {
+            let live = pipeline_status_sender
+                .borrow()
+                .live
+                .clone()
+                .unwrap_or_default()
+                .running();
             let status = StatusSnapshot::from_pipeline_mode(
                 StreamMode::Yellowstone,
                 status_stream_name.clone(),
                 summary,
-            );
-            if status_sender.send(status).is_err() {
+            )
+            .with_live(live);
+            if pipeline_status_sender.send(status).is_err() {
                 tracing::debug!("yellowstone status receiver dropped");
             }
         },

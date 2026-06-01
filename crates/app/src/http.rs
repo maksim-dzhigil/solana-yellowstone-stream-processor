@@ -20,6 +20,60 @@ pub enum StreamMode {
     Yellowstone,
 }
 
+#[cfg(feature = "yellowstone-live")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LiveProducerState {
+    Running,
+    Reconnecting,
+}
+
+#[cfg(feature = "yellowstone-live")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LiveProducerStatus {
+    pub producer_state: LiveProducerState,
+    pub reconnect_attempts: u64,
+    pub last_reconnect_delay_ms: Option<u64>,
+    pub last_error_kind: Option<String>,
+    pub last_error: Option<String>,
+}
+
+#[cfg(feature = "yellowstone-live")]
+impl Default for LiveProducerStatus {
+    fn default() -> Self {
+        Self {
+            producer_state: LiveProducerState::Running,
+            reconnect_attempts: 0,
+            last_reconnect_delay_ms: None,
+            last_error_kind: None,
+            last_error: None,
+        }
+    }
+}
+
+#[cfg(feature = "yellowstone-live")]
+impl LiveProducerStatus {
+    pub fn running(mut self) -> Self {
+        self.producer_state = LiveProducerState::Running;
+        self
+    }
+
+    pub fn reconnecting(
+        reconnect_attempts: u64,
+        last_reconnect_delay_ms: u64,
+        last_error_kind: impl Into<String>,
+        last_error: impl Into<String>,
+    ) -> Self {
+        Self {
+            producer_state: LiveProducerState::Reconnecting,
+            reconnect_attempts,
+            last_reconnect_delay_ms: Some(last_reconnect_delay_ms),
+            last_error_kind: Some(last_error_kind.into()),
+            last_error: Some(last_error.into()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct StatusSnapshot {
     pub health: HealthState,
@@ -32,6 +86,9 @@ pub struct StatusSnapshot {
     pub events_attempted: usize,
     pub events_inserted: usize,
     pub events_deduplicated: usize,
+    #[cfg(feature = "yellowstone-live")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub live: Option<LiveProducerStatus>,
 }
 
 impl StatusSnapshot {
@@ -55,7 +112,15 @@ impl StatusSnapshot {
             events_attempted: summary.write_summary.attempted,
             events_inserted: summary.write_summary.inserted,
             events_deduplicated: summary.write_summary.deduplicated,
+            #[cfg(feature = "yellowstone-live")]
+            live: None,
         }
+    }
+
+    #[cfg(feature = "yellowstone-live")]
+    pub fn with_live(mut self, live: LiveProducerStatus) -> Self {
+        self.live = Some(live);
+        self
     }
 }
 
@@ -195,6 +260,32 @@ fn render_metrics(status: &StatusSnapshot) -> String {
 
     for metric in cursor_gauges(status) {
         push_gauge(&mut output, metric.name, metric.help, "", metric.value);
+    }
+
+    #[cfg(feature = "yellowstone-live")]
+    if let Some(live) = &status.live {
+        push_counter(
+            &mut output,
+            "solana_stream_reconnect_attempts_total",
+            "Total Yellowstone reconnect attempts.",
+            live.reconnect_attempts as usize,
+        );
+        push_gauge(
+            &mut output,
+            "solana_stream_producer_up",
+            "Whether the Yellowstone producer is currently running.",
+            "",
+            u64::from(live.producer_state == LiveProducerState::Running),
+        );
+        if let Some(delay_ms) = live.last_reconnect_delay_ms {
+            push_gauge(
+                &mut output,
+                "solana_stream_reconnect_delay_ms",
+                "Last Yellowstone reconnect backoff delay in milliseconds.",
+                "",
+                delay_ms,
+            );
+        }
     }
 
     output
@@ -384,6 +475,35 @@ mod tests {
         assert!(metrics.contains("solana_stream_last_persisted_slot 42"));
     }
 
+    #[cfg(feature = "yellowstone-live")]
+    #[test]
+    fn renders_live_producer_status_metrics() {
+        let summary = PipelineSummary {
+            events_seen: 0,
+            events_skipped: 0,
+            batches_written: 0,
+            write_summary: WriteSummary::default(),
+            last_persisted_slot: None,
+        };
+        let status =
+            StatusSnapshot::from_pipeline_mode(super::StreamMode::Yellowstone, "live", summary)
+                .with_live(super::LiveProducerStatus::reconnecting(
+                    3,
+                    1_000,
+                    "receive",
+                    "yellowstone stream receive failed with gRPC status Unavailable",
+                ));
+
+        let metrics = render_metrics(&status);
+
+        assert!(
+            metrics.contains("solana_stream_info{stream_name=\"live\",mode=\"yellowstone\"} 1")
+        );
+        assert!(metrics.contains("solana_stream_reconnect_attempts_total 3"));
+        assert!(metrics.contains("solana_stream_producer_up 0"));
+        assert!(metrics.contains("solana_stream_reconnect_delay_ms 1000"));
+    }
+
     #[test]
     fn omits_last_persisted_slot_when_cursor_is_missing() {
         let summary = PipelineSummary {
@@ -424,6 +544,54 @@ mod tests {
         assert_content_type_starts_with(&response, "application/json");
         let body: Value = serde_json::from_str(&response.body).expect("readyz json should parse");
         assert_eq!(body, serde_json::json!({ "ready": true }));
+    }
+
+    #[cfg(feature = "yellowstone-live")]
+    #[tokio::test]
+    async fn status_endpoint_returns_live_producer_status() {
+        let summary = PipelineSummary {
+            events_seen: 0,
+            events_skipped: 0,
+            batches_written: 0,
+            write_summary: WriteSummary::default(),
+            last_persisted_slot: None,
+        };
+        let status = StatusSnapshot::from_pipeline_mode(
+            super::StreamMode::Yellowstone,
+            "live-test",
+            summary,
+        )
+        .with_live(super::LiveProducerStatus::reconnecting(
+            2,
+            2_000,
+            "subscribe",
+            "yellowstone subscribe failed with gRPC status Unavailable",
+        ));
+        let (_sender, receiver) = super::status_channel(status);
+
+        let response = router(receiver)
+            .oneshot(
+                Request::builder()
+                    .uri("/status")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body should read");
+        let body: Value = serde_json::from_slice(&body).expect("status json should parse");
+
+        assert_eq!(body["mode"], "yellowstone");
+        assert_eq!(body["live"]["producer_state"], "reconnecting");
+        assert_eq!(body["live"]["reconnect_attempts"], 2);
+        assert_eq!(body["live"]["last_reconnect_delay_ms"], 2_000);
+        assert_eq!(body["live"]["last_error_kind"], "subscribe");
+        assert_eq!(
+            body["live"]["last_error"],
+            "yellowstone subscribe failed with gRPC status Unavailable"
+        );
     }
 
     #[tokio::test]
