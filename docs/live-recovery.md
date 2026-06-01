@@ -49,11 +49,12 @@ The current implementation does not yet prove gap-free live recovery:
 - Use `from_slot` whenever a local persisted cursor exists.
 - Treat reconnect without a local `from_slot` as `gap_risk`.
 - Treat provider replay support as an operational requirement, not an assumed guarantee.
+- Validate provider behavior with [provider-compatibility.md](provider-compatibility.md) before relying on live recovery.
 - Keep the current max-slot cursor contract documented until contiguous/finality-aware tracking is implemented.
 - Do not claim gap-free recovery until provider replay, finalized slot tracking, and reconciliation are implemented and tested together.
 
 ## Next Implementation Steps
 
-- Add provider compatibility notes for `from_slot`, retention window, auth metadata, compression, keepalive, and filter limits.
+- Fill a provider compatibility profile for the first real Yellowstone provider.
 - Add a finalized-slot reconciliation design before changing cursor semantics.
 - Add provider-specific integration tests once a concrete Yellowstone provider profile is selected.

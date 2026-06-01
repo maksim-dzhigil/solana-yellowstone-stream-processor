@@ -68,7 +68,7 @@ Current `event_id` values are derived from typed source identity, not payload co
 - Live Yellowstone mode is available only with `--features yellowstone-live`.
 - Live Yellowstone defaults to slots-only subscription; broader transaction/block/entry subscriptions are opt-in.
 - Live reconnect uses configurable bounded backoff and defaults to unlimited retries.
-- Provider-specific replay behavior is not validated yet; see [docs/live-recovery.md](docs/live-recovery.md).
+- Provider-specific replay behavior is not validated yet; see [docs/live-recovery.md](docs/live-recovery.md), [docs/provider-compatibility.md](docs/provider-compatibility.md), and [docs/provider-matrix.md](docs/provider-matrix.md).
 - Cursor progress is currently based on the maximum slot in each successful batch; this is not a gap-free live recovery guarantee.
 - Replay currently loads the configured JSONL file before entering the bounded channel.
 - Exactly-once upstream delivery is not claimed.
@@ -181,4 +181,6 @@ cargo clippy -p solana-yellowstone-stream-processor --features yellowstone-live 
 ## Documentation
 
 - [docs/live-recovery.md](docs/live-recovery.md) - current live reconnect and recovery policy.
+- [docs/provider-compatibility.md](docs/provider-compatibility.md) - checklist for validating Yellowstone provider behavior.
+- [docs/provider-matrix.md](docs/provider-matrix.md) - provider compatibility status matrix.
 - [LOGBOOK.md](LOGBOOK.md) - high-level project progress log.
