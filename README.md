@@ -67,7 +67,7 @@ Current `event_id` values are derived from typed source identity, not payload co
 
 - Live Yellowstone mode is available only with `--features yellowstone-live`.
 - Live Yellowstone defaults to slots-only subscription; broader transaction/block/entry subscriptions are opt-in.
-- Live reconnect defaults to unlimited retries with bounded backoff; retry tuning is not exposed through app config yet.
+- Live reconnect uses configurable bounded backoff and defaults to unlimited retries.
 - Provider-specific replay and gap recovery semantics are not implemented yet.
 - Cursor progress is currently based on the maximum slot in each successful batch; this is not a gap-free live recovery guarantee.
 - Replay currently loads the configured JSONL file before entering the bounded channel.
@@ -94,6 +94,9 @@ Important variables:
 - `YELLOWSTONE_X_TOKEN`: optional Yellowstone provider token sent as `x-token` metadata.
 - `YELLOWSTONE_CLUSTER`: cluster label used in event identity, default `mainnet-beta`.
 - `YELLOWSTONE_SUBSCRIPTIONS`: comma-separated live subscription set; allowed values are `slots`, `transactions`, `blocks`, and `entries`; default is `slots`.
+- `YELLOWSTONE_RECONNECT_INITIAL_DELAY_MS`: initial retry backoff delay in milliseconds; default is `1000`.
+- `YELLOWSTONE_RECONNECT_MAX_DELAY_MS`: maximum retry backoff delay in milliseconds; default is `30000` and must be at least the initial delay.
+- `YELLOWSTONE_RECONNECT_MAX_ATTEMPTS`: maximum reconnect attempts; default is unset/unlimited, and `0` also means unlimited.
 - `YELLOWSTONE_TRANSACTION_ACCOUNT_INCLUDE`: optional comma-separated transaction `account_include` filters.
 - `YELLOWSTONE_TRANSACTION_ACCOUNT_EXCLUDE`: optional comma-separated transaction `account_exclude` filters.
 - `YELLOWSTONE_TRANSACTION_ACCOUNT_REQUIRED`: optional comma-separated transaction `account_required` filters.
@@ -131,6 +134,8 @@ RUN_MODE=yellowstone \
 YELLOWSTONE_ENDPOINT=https://provider.example \
 YELLOWSTONE_CLUSTER=mainnet-beta \
 YELLOWSTONE_SUBSCRIPTIONS=slots,transactions \
+YELLOWSTONE_RECONNECT_INITIAL_DELAY_MS=1000 \
+YELLOWSTONE_RECONNECT_MAX_DELAY_MS=30000 \
 YELLOWSTONE_TRANSACTION_ACCOUNT_INCLUDE=TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA \
 cargo run -p solana-yellowstone-stream-processor --features yellowstone-live
 ```
@@ -138,7 +143,7 @@ cargo run -p solana-yellowstone-stream-processor --features yellowstone-live
 Equivalent CLI mode selection:
 
 ```bash
-cargo run -p solana-yellowstone-stream-processor --features yellowstone-live -- --mode yellowstone --yellowstone-endpoint https://provider.example --yellowstone-cluster mainnet-beta --yellowstone-subscriptions slots,transactions --yellowstone-transaction-account-include TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA
+cargo run -p solana-yellowstone-stream-processor --features yellowstone-live -- --mode yellowstone --yellowstone-endpoint https://provider.example --yellowstone-cluster mainnet-beta --yellowstone-subscriptions slots,transactions --yellowstone-reconnect-initial-delay-ms 1000 --yellowstone-reconnect-max-delay-ms 30000 --yellowstone-transaction-account-include TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA
 ```
 
 HTTP endpoints:

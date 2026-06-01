@@ -1,6 +1,6 @@
 use crate::cli::{CliArgs, CliRunMode};
 use crate::error::ConfigError;
-use std::fmt;
+use std::{fmt, time::Duration};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunMode {
@@ -68,6 +68,33 @@ impl YellowstoneSubscriptions {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct YellowstoneReconnectSettings {
+    pub initial_delay: Duration,
+    pub max_delay: Duration,
+    pub max_retries: Option<u32>,
+}
+
+impl Default for YellowstoneReconnectSettings {
+    fn default() -> Self {
+        Self {
+            initial_delay: Duration::from_secs(1),
+            max_delay: Duration::from_secs(30),
+            max_retries: None,
+        }
+    }
+}
+
+impl YellowstoneReconnectSettings {
+    fn from_ms(initial_delay_ms: u64, max_delay_ms: u64, max_retries: Option<u32>) -> Self {
+        Self {
+            initial_delay: Duration::from_millis(initial_delay_ms),
+            max_delay: Duration::from_millis(max_delay_ms),
+            max_retries,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Config {
     pub run_mode: RunMode,
@@ -86,6 +113,7 @@ pub struct Config {
     pub yellowstone_transaction_account_include: Vec<String>,
     pub yellowstone_transaction_account_exclude: Vec<String>,
     pub yellowstone_transaction_account_required: Vec<String>,
+    pub yellowstone_reconnect: YellowstoneReconnectSettings,
 }
 
 impl fmt::Debug for Config {
@@ -124,6 +152,18 @@ impl fmt::Debug for Config {
             .field(
                 "yellowstone_transaction_account_required_count",
                 &self.yellowstone_transaction_account_required.len(),
+            )
+            .field(
+                "yellowstone_reconnect_initial_delay_ms",
+                &self.yellowstone_reconnect.initial_delay.as_millis(),
+            )
+            .field(
+                "yellowstone_reconnect_max_delay_ms",
+                &self.yellowstone_reconnect.max_delay.as_millis(),
+            )
+            .field(
+                "yellowstone_reconnect_max_retries",
+                &self.yellowstone_reconnect.max_retries,
             )
             .finish()
     }
@@ -173,6 +213,7 @@ impl Config {
                 source,
                 "YELLOWSTONE_TRANSACTION_ACCOUNT_REQUIRED",
             )?,
+            yellowstone_reconnect: env_yellowstone_reconnect_settings(source)?,
         })
     }
 
@@ -219,6 +260,36 @@ impl Config {
             self.yellowstone_transaction_account_required =
                 parse_account_filter_list("--yellowstone-transaction-account-required", value)?;
         }
+        if let Some(value) = non_empty_cli_value(
+            "--yellowstone-reconnect-initial-delay-ms",
+            args.yellowstone_reconnect_initial_delay_ms.as_deref(),
+        )? {
+            self.yellowstone_reconnect.initial_delay = Duration::from_millis(parse_positive_u64(
+                "--yellowstone-reconnect-initial-delay-ms",
+                value,
+            )?);
+        }
+        if let Some(value) = non_empty_cli_value(
+            "--yellowstone-reconnect-max-delay-ms",
+            args.yellowstone_reconnect_max_delay_ms.as_deref(),
+        )? {
+            self.yellowstone_reconnect.max_delay = Duration::from_millis(parse_positive_u64(
+                "--yellowstone-reconnect-max-delay-ms",
+                value,
+            )?);
+        }
+        if let Some(value) = non_empty_cli_value(
+            "--yellowstone-reconnect-max-attempts",
+            args.yellowstone_reconnect_max_attempts.as_deref(),
+        )? {
+            self.yellowstone_reconnect.max_retries =
+                parse_reconnect_max_retries("--yellowstone-reconnect-max-attempts", value)?;
+        }
+        validate_yellowstone_reconnect_settings(
+            self.yellowstone_reconnect,
+            "--yellowstone-reconnect-initial-delay-ms",
+            "--yellowstone-reconnect-max-delay-ms",
+        )?;
         if args.exit_after_replay {
             self.exit_after_replay = true;
         }
@@ -228,7 +299,7 @@ impl Config {
 
     pub fn redacted_summary(&self) -> String {
         format!(
-            "run_mode={}; http_addr={}; replay_path={}; stream_name={}; exit_after_replay={}; batch_size={}; channel_capacity={}; database_url_configured={}; yellowstone_endpoint_configured={}; yellowstone_x_token_configured={}; yellowstone_cluster={}; yellowstone_subscriptions={}; yellowstone_transaction_account_include_count={}; yellowstone_transaction_account_exclude_count={}; yellowstone_transaction_account_required_count={}",
+            "run_mode={}; http_addr={}; replay_path={}; stream_name={}; exit_after_replay={}; batch_size={}; channel_capacity={}; database_url_configured={}; yellowstone_endpoint_configured={}; yellowstone_x_token_configured={}; yellowstone_cluster={}; yellowstone_subscriptions={}; yellowstone_transaction_account_include_count={}; yellowstone_transaction_account_exclude_count={}; yellowstone_transaction_account_required_count={}; yellowstone_reconnect_initial_delay_ms={}; yellowstone_reconnect_max_delay_ms={}; yellowstone_reconnect_max_retries={}",
             self.run_mode,
             self.http_addr,
             self.replay_path,
@@ -244,6 +315,9 @@ impl Config {
             self.yellowstone_transaction_account_include.len(),
             self.yellowstone_transaction_account_exclude.len(),
             self.yellowstone_transaction_account_required.len(),
+            self.yellowstone_reconnect.initial_delay.as_millis(),
+            self.yellowstone_reconnect.max_delay.as_millis(),
+            reconnect_retries_summary(self.yellowstone_reconnect.max_retries),
         )
     }
 
@@ -411,12 +485,99 @@ fn env_positive_usize_or_default(
     }
 }
 
+fn env_yellowstone_reconnect_settings(
+    source: &impl ConfigSource,
+) -> Result<YellowstoneReconnectSettings, ConfigError> {
+    let initial_delay_ms =
+        env_positive_u64_or_default(source, "YELLOWSTONE_RECONNECT_INITIAL_DELAY_MS", 1_000)?;
+    let max_delay_ms =
+        env_positive_u64_or_default(source, "YELLOWSTONE_RECONNECT_MAX_DELAY_MS", 30_000)?;
+    let max_retries = env_reconnect_max_retries(source)?;
+    let settings =
+        YellowstoneReconnectSettings::from_ms(initial_delay_ms, max_delay_ms, max_retries);
+
+    validate_yellowstone_reconnect_settings(
+        settings,
+        "YELLOWSTONE_RECONNECT_INITIAL_DELAY_MS",
+        "YELLOWSTONE_RECONNECT_MAX_DELAY_MS",
+    )?;
+
+    Ok(settings)
+}
+
+fn env_positive_u64_or_default(
+    source: &impl ConfigSource,
+    key: &'static str,
+    default: u64,
+) -> Result<u64, ConfigError> {
+    let raw = env_or_default(source, key, &default.to_string())?;
+    parse_positive_u64(key, &raw)
+}
+
+fn env_reconnect_max_retries(source: &impl ConfigSource) -> Result<Option<u32>, ConfigError> {
+    match source.get("YELLOWSTONE_RECONNECT_MAX_ATTEMPTS")? {
+        Some(value) if value.trim().is_empty() => Err(ConfigError::Empty {
+            key: "YELLOWSTONE_RECONNECT_MAX_ATTEMPTS",
+        }),
+        Some(value) => parse_reconnect_max_retries("YELLOWSTONE_RECONNECT_MAX_ATTEMPTS", &value),
+        None => Ok(None),
+    }
+}
+
+fn parse_reconnect_max_retries(key: &'static str, value: &str) -> Result<Option<u32>, ConfigError> {
+    let parsed = value
+        .parse::<u32>()
+        .map_err(|_| ConfigError::InvalidUsize {
+            key,
+            value: value.to_owned(),
+        })?;
+
+    Ok((parsed > 0).then_some(parsed))
+}
+
+fn parse_positive_u64(key: &'static str, value: &str) -> Result<u64, ConfigError> {
+    let parsed = value
+        .parse::<u64>()
+        .map_err(|_| ConfigError::InvalidUsize {
+            key,
+            value: value.to_owned(),
+        })?;
+
+    if parsed == 0 {
+        Err(ConfigError::NonPositive { key })
+    } else {
+        Ok(parsed)
+    }
+}
+
+fn validate_yellowstone_reconnect_settings(
+    settings: YellowstoneReconnectSettings,
+    initial_key: &'static str,
+    max_key: &'static str,
+) -> Result<(), ConfigError> {
+    if settings.max_delay < settings.initial_delay {
+        return Err(ConfigError::InvalidReconnectDelayOrder {
+            initial_key,
+            max_key,
+        });
+    }
+
+    Ok(())
+}
+
+fn reconnect_retries_summary(max_retries: Option<u32>) -> String {
+    max_retries.map_or_else(|| "unlimited".to_owned(), |value| value.to_string())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Config, ConfigSource, RunMode, YellowstoneSubscriptions};
+    use super::{
+        Config, ConfigSource, RunMode, YellowstoneReconnectSettings, YellowstoneSubscriptions,
+    };
     use crate::cli::{CliArgs, CliRunMode};
     use crate::error::ConfigError;
     use std::collections::HashMap;
+    use std::time::Duration;
 
     #[derive(Default)]
     struct FakeEnv {
@@ -462,6 +623,10 @@ mod tests {
         assert!(config.yellowstone_transaction_account_include.is_empty());
         assert!(config.yellowstone_transaction_account_exclude.is_empty());
         assert!(config.yellowstone_transaction_account_required.is_empty());
+        assert_eq!(
+            config.yellowstone_reconnect,
+            YellowstoneReconnectSettings::default()
+        );
     }
 
     #[test]
@@ -486,7 +651,10 @@ mod tests {
                 "include-1, include-2, include-1",
             )
             .with("YELLOWSTONE_TRANSACTION_ACCOUNT_EXCLUDE", "exclude-1")
-            .with("YELLOWSTONE_TRANSACTION_ACCOUNT_REQUIRED", "required-1");
+            .with("YELLOWSTONE_TRANSACTION_ACCOUNT_REQUIRED", "required-1")
+            .with("YELLOWSTONE_RECONNECT_INITIAL_DELAY_MS", "250")
+            .with("YELLOWSTONE_RECONNECT_MAX_DELAY_MS", "5000")
+            .with("YELLOWSTONE_RECONNECT_MAX_ATTEMPTS", "7");
 
         let config = Config::from_source(&source)
             .expect("config should load")
@@ -527,6 +695,14 @@ mod tests {
             config.yellowstone_transaction_account_required,
             vec!["required-1".to_owned()]
         );
+        assert_eq!(
+            config.yellowstone_reconnect,
+            YellowstoneReconnectSettings {
+                initial_delay: Duration::from_millis(250),
+                max_delay: Duration::from_millis(5_000),
+                max_retries: Some(7),
+            }
+        );
     }
 
     #[test]
@@ -538,6 +714,8 @@ mod tests {
         assert!(summary.contains("database_url_configured=true"));
         assert!(summary.contains("yellowstone_endpoint_configured=true"));
         assert!(summary.contains("yellowstone_x_token_configured=true"));
+        assert!(summary.contains("yellowstone_reconnect_initial_delay_ms=1000"));
+        assert!(summary.contains("yellowstone_reconnect_max_retries=unlimited"));
         assert_no_secret_config_contents(&summary);
     }
 
@@ -609,6 +787,9 @@ mod tests {
                 ),
                 yellowstone_transaction_account_exclude: Some("exclude-cli".to_owned()),
                 yellowstone_transaction_account_required: Some("required-cli".to_owned()),
+                yellowstone_reconnect_initial_delay_ms: Some("500".to_owned()),
+                yellowstone_reconnect_max_delay_ms: Some("10000".to_owned()),
+                yellowstone_reconnect_max_attempts: Some("0".to_owned()),
                 exit_after_replay: true,
             })
             .expect("cli overrides should apply");
@@ -642,6 +823,14 @@ mod tests {
         assert_eq!(
             config.yellowstone_transaction_account_required,
             vec!["required-cli".to_owned()]
+        );
+        assert_eq!(
+            config.yellowstone_reconnect,
+            YellowstoneReconnectSettings {
+                initial_delay: Duration::from_millis(500),
+                max_delay: Duration::from_millis(10_000),
+                max_retries: None,
+            }
         );
         assert!(config.exit_after_replay);
         assert_eq!(
@@ -724,6 +913,37 @@ mod tests {
             err,
             ConfigError::Empty {
                 key: "YELLOWSTONE_TRANSACTION_ACCOUNT_INCLUDE"
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_reconnect_delay_order() {
+        let source = FakeEnv::default()
+            .with("YELLOWSTONE_RECONNECT_INITIAL_DELAY_MS", "5000")
+            .with("YELLOWSTONE_RECONNECT_MAX_DELAY_MS", "1000");
+
+        let err = Config::from_source(&source).expect_err("invalid reconnect order should fail");
+
+        assert_eq!(
+            err,
+            ConfigError::InvalidReconnectDelayOrder {
+                initial_key: "YELLOWSTONE_RECONNECT_INITIAL_DELAY_MS",
+                max_key: "YELLOWSTONE_RECONNECT_MAX_DELAY_MS",
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_zero_reconnect_delay_values() {
+        let source = FakeEnv::default().with("YELLOWSTONE_RECONNECT_INITIAL_DELAY_MS", "0");
+
+        let err = Config::from_source(&source).expect_err("zero reconnect delay should fail");
+
+        assert_eq!(
+            err,
+            ConfigError::NonPositive {
+                key: "YELLOWSTONE_RECONNECT_INITIAL_DELAY_MS"
             }
         );
     }

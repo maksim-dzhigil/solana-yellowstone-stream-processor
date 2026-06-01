@@ -114,6 +114,9 @@ async fn run_yellowstone(config: Config) -> Result<(), AppRunError> {
         yellowstone_transaction_account_include_count = config.yellowstone_transaction_account_include.len(),
         yellowstone_transaction_account_exclude_count = config.yellowstone_transaction_account_exclude.len(),
         yellowstone_transaction_account_required_count = config.yellowstone_transaction_account_required.len(),
+        yellowstone_reconnect_initial_delay_ms = config.yellowstone_reconnect.initial_delay.as_millis(),
+        yellowstone_reconnect_max_delay_ms = config.yellowstone_reconnect.max_delay.as_millis(),
+        yellowstone_reconnect_max_retries = ?config.yellowstone_reconnect.max_retries,
         "yellowstone live mode selected"
     );
 
@@ -134,6 +137,12 @@ async fn run_yellowstone(config: Config) -> Result<(), AppRunError> {
     } else {
         info!(stream_name = %config.stream_name, "stream cursor not found");
     }
+
+    let yellowstone_reconnect_config = YellowstoneReconnectConfig {
+        initial_delay: config.yellowstone_reconnect.initial_delay,
+        max_delay: config.yellowstone_reconnect.max_delay,
+        max_retries: config.yellowstone_reconnect.max_retries,
+    };
 
     let mut yellowstone_config = YellowstoneGrpcConfig::slots_only(
         config
@@ -196,7 +205,7 @@ async fn run_yellowstone(config: Config) -> Result<(), AppRunError> {
         move |sender| {
             run_yellowstone_grpc_producer_with_reconnect_status(
                 yellowstone_config,
-                YellowstoneReconnectConfig::default(),
+                yellowstone_reconnect_config,
                 sender,
                 move |event| {
                     let mut status = reconnect_status_sender.borrow().clone();
@@ -324,6 +333,9 @@ async fn run_yellowstone(config: Config) -> Result<(), AppRunError> {
         yellowstone_transaction_account_include_count = config.yellowstone_transaction_account_include.len(),
         yellowstone_transaction_account_exclude_count = config.yellowstone_transaction_account_exclude.len(),
         yellowstone_transaction_account_required_count = config.yellowstone_transaction_account_required.len(),
+        yellowstone_reconnect_initial_delay_ms = config.yellowstone_reconnect.initial_delay.as_millis(),
+        yellowstone_reconnect_max_delay_ms = config.yellowstone_reconnect.max_delay.as_millis(),
+        yellowstone_reconnect_max_retries = ?config.yellowstone_reconnect.max_retries,
         "yellowstone live mode selected"
     );
 

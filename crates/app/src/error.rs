@@ -26,6 +26,10 @@ pub enum ConfigError {
         key: &'static str,
         value: String,
     },
+    InvalidReconnectDelayOrder {
+        initial_key: &'static str,
+        max_key: &'static str,
+    },
     MissingRequired {
         key: &'static str,
         context: &'static str,
@@ -52,6 +56,13 @@ impl fmt::Display for ConfigError {
             Self::InvalidUsize { key, value } => {
                 write!(f, "{key} must be a positive integer, got {value:?}")
             }
+            Self::InvalidReconnectDelayOrder {
+                initial_key,
+                max_key,
+            } => write!(
+                f,
+                "{max_key} must be greater than or equal to {initial_key}"
+            ),
             Self::MissingRequired { key, context } => {
                 write!(f, "{key} is required when {context}")
             }

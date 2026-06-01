@@ -47,6 +47,24 @@ fn exits_with_config_error_for_yellowstone_mode_without_endpoint() {
 }
 
 #[test]
+fn exits_with_config_error_for_invalid_yellowstone_reconnect_delays() {
+    command()
+        .arg("--mode")
+        .arg("yellowstone")
+        .arg("--yellowstone-endpoint")
+        .arg("https://provider.example")
+        .arg("--yellowstone-reconnect-initial-delay-ms")
+        .arg("5000")
+        .arg("--yellowstone-reconnect-max-delay-ms")
+        .arg("1000")
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "configuration error: --yellowstone-reconnect-max-delay-ms must be greater than or equal to --yellowstone-reconnect-initial-delay-ms",
+        ));
+}
+
+#[test]
 fn exits_with_config_error_for_invalid_yellowstone_subscriptions() {
     command()
         .arg("--mode")

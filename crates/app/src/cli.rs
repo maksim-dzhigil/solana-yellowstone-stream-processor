@@ -41,6 +41,15 @@ pub struct CliArgs {
     #[arg(long, value_name = "LIST")]
     pub yellowstone_transaction_account_required: Option<String>,
 
+    #[arg(long, value_name = "MS")]
+    pub yellowstone_reconnect_initial_delay_ms: Option<String>,
+
+    #[arg(long, value_name = "MS")]
+    pub yellowstone_reconnect_max_delay_ms: Option<String>,
+
+    #[arg(long, value_name = "N")]
+    pub yellowstone_reconnect_max_attempts: Option<String>,
+
     #[arg(long)]
     pub exit_after_replay: bool,
 }
