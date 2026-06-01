@@ -9,7 +9,7 @@ use solana_yellowstone_storage::{
 #[cfg(feature = "yellowstone-live")]
 use solana_yellowstone_stream::pipeline::PipelineSummary;
 #[cfg(feature = "yellowstone-live")]
-use solana_yellowstone_stream::pipeline::run_event_producer_pipeline_with_progress;
+use solana_yellowstone_stream::pipeline::run_event_producer_pipeline_with_progress_and_activity;
 use solana_yellowstone_stream::pipeline::{PipelineConfig, run_replay_pipeline};
 use solana_yellowstone_stream::replay::ReplaySource;
 use solana_yellowstone_stream::source::EventSource;
@@ -18,6 +18,8 @@ use solana_yellowstone_stream::yellowstone_live::{
     YellowstoneGrpcConfig, YellowstoneReconnectConfig,
     run_yellowstone_grpc_producer_with_reconnect_status,
 };
+#[cfg(feature = "yellowstone-live")]
+use std::time::{Duration, Instant};
 #[cfg(feature = "yellowstone-live")]
 use tokio::sync::watch;
 use tracing::info;
@@ -187,7 +189,10 @@ async fn run_yellowstone(config: Config) -> Result<(), AppRunError> {
         http::serve_updates_until_shutdown(&config.http_addr, status_receiver, http_shutdown);
     let reconnect_status_sender = status_sender.clone();
     let pipeline_status_sender = status_sender.clone();
-    let pipeline = run_event_producer_pipeline_with_progress(
+    let activity_status_sender = status_sender.clone();
+    let mut last_batches_written = 0;
+    let mut last_activity_status_sent = None::<Instant>;
+    let pipeline = run_event_producer_pipeline_with_progress_and_activity(
         move |sender| {
             run_yellowstone_grpc_producer_with_reconnect_status(
                 yellowstone_config,
@@ -195,12 +200,13 @@ async fn run_yellowstone(config: Config) -> Result<(), AppRunError> {
                 sender,
                 move |event| {
                     let mut status = reconnect_status_sender.borrow().clone();
-                    status.live = Some(LiveProducerStatus::reconnecting(
+                    let live = status.live.clone().unwrap_or_default().with_reconnecting(
                         u64::from(event.retry_attempt),
                         event.delay.as_millis() as u64,
                         event.error_kind.as_str(),
                         event.error_message,
-                    ));
+                    );
+                    status.live = Some(live);
                     if reconnect_status_sender.send(status).is_err() {
                         tracing::debug!("yellowstone status receiver dropped");
                     }
@@ -212,12 +218,16 @@ async fn run_yellowstone(config: Config) -> Result<(), AppRunError> {
         &config.stream_name,
         pipeline_config,
         move |summary| {
-            let live = pipeline_status_sender
+            let mut live = pipeline_status_sender
                 .borrow()
                 .live
                 .clone()
                 .unwrap_or_default()
                 .running();
+            if summary.batches_written > last_batches_written {
+                live = live.with_batch_persisted_at(http::current_unix_ms());
+                last_batches_written = summary.batches_written;
+            }
             let status = StatusSnapshot::from_pipeline_mode(
                 StreamMode::Yellowstone,
                 status_stream_name.clone(),
@@ -225,6 +235,26 @@ async fn run_yellowstone(config: Config) -> Result<(), AppRunError> {
             )
             .with_live(live);
             if pipeline_status_sender.send(status).is_err() {
+                tracing::debug!("yellowstone status receiver dropped");
+            }
+        },
+        move |_| {
+            let now = Instant::now();
+            if last_activity_status_sent
+                .is_some_and(|last| now.duration_since(last) < Duration::from_secs(1))
+            {
+                return;
+            }
+            last_activity_status_sent = Some(now);
+
+            let mut status = activity_status_sender.borrow().clone();
+            let live = status
+                .live
+                .clone()
+                .unwrap_or_default()
+                .with_event_observed_at(http::current_unix_ms());
+            status.live = Some(live);
+            if activity_status_sender.send(status).is_err() {
                 tracing::debug!("yellowstone status receiver dropped");
             }
         },

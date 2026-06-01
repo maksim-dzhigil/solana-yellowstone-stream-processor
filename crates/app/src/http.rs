@@ -1,6 +1,8 @@
 use axum::{Json, Router, extract::State, http::header, response::IntoResponse, routing::get};
 use serde::Serialize;
 use solana_yellowstone_stream::pipeline::PipelineSummary;
+#[cfg(feature = "yellowstone-live")]
+use std::time::{SystemTime, UNIX_EPOCH};
 use std::{fmt, future::Future};
 use tokio::{net::TcpListener, sync::watch};
 
@@ -36,6 +38,10 @@ pub struct LiveProducerStatus {
     pub last_reconnect_delay_ms: Option<u64>,
     pub last_error_kind: Option<String>,
     pub last_error: Option<String>,
+    pub last_event_at_unix_ms: Option<u64>,
+    pub last_persisted_batch_at_unix_ms: Option<u64>,
+    pub seconds_since_last_event: Option<u64>,
+    pub seconds_since_last_persisted_batch: Option<u64>,
 }
 
 #[cfg(feature = "yellowstone-live")]
@@ -47,6 +53,10 @@ impl Default for LiveProducerStatus {
             last_reconnect_delay_ms: None,
             last_error_kind: None,
             last_error: None,
+            last_event_at_unix_ms: None,
+            last_persisted_batch_at_unix_ms: None,
+            seconds_since_last_event: None,
+            seconds_since_last_persisted_batch: None,
         }
     }
 }
@@ -58,19 +68,41 @@ impl LiveProducerStatus {
         self
     }
 
-    pub fn reconnecting(
+    pub fn with_reconnecting(
+        mut self,
         reconnect_attempts: u64,
         last_reconnect_delay_ms: u64,
         last_error_kind: impl Into<String>,
         last_error: impl Into<String>,
     ) -> Self {
-        Self {
-            producer_state: LiveProducerState::Reconnecting,
-            reconnect_attempts,
-            last_reconnect_delay_ms: Some(last_reconnect_delay_ms),
-            last_error_kind: Some(last_error_kind.into()),
-            last_error: Some(last_error.into()),
-        }
+        self.producer_state = LiveProducerState::Reconnecting;
+        self.reconnect_attempts = reconnect_attempts;
+        self.last_reconnect_delay_ms = Some(last_reconnect_delay_ms);
+        self.last_error_kind = Some(last_error_kind.into());
+        self.last_error = Some(last_error.into());
+        self
+    }
+
+    pub fn with_event_observed_at(mut self, now_unix_ms: u64) -> Self {
+        self.last_event_at_unix_ms = Some(now_unix_ms);
+        self.seconds_since_last_event = Some(0);
+        self
+    }
+
+    pub fn with_batch_persisted_at(mut self, now_unix_ms: u64) -> Self {
+        self.last_persisted_batch_at_unix_ms = Some(now_unix_ms);
+        self.seconds_since_last_persisted_batch = Some(0);
+        self
+    }
+
+    pub fn refresh_staleness_at(mut self, now_unix_ms: u64) -> Self {
+        self.seconds_since_last_event = self
+            .last_event_at_unix_ms
+            .map(|event_at| seconds_between(event_at, now_unix_ms));
+        self.seconds_since_last_persisted_batch = self
+            .last_persisted_batch_at_unix_ms
+            .map(|batch_at| seconds_between(batch_at, now_unix_ms));
+        self
     }
 }
 
@@ -122,6 +154,28 @@ impl StatusSnapshot {
         self.live = Some(live);
         self
     }
+
+    #[cfg(feature = "yellowstone-live")]
+    fn refresh_live_staleness(mut self) -> Self {
+        let now_unix_ms = current_unix_ms();
+        if let Some(live) = self.live.take() {
+            self.live = Some(live.refresh_staleness_at(now_unix_ms));
+        }
+        self
+    }
+}
+
+#[cfg(feature = "yellowstone-live")]
+pub fn current_unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+#[cfg(feature = "yellowstone-live")]
+fn seconds_between(start_unix_ms: u64, end_unix_ms: u64) -> u64 {
+    end_unix_ms.saturating_sub(start_unix_ms) / 1_000
 }
 
 pub type StatusSender = watch::Sender<StatusSnapshot>;
@@ -225,15 +279,27 @@ async fn readyz(State(state): State<StatusState>) -> Json<ReadyResponse> {
 }
 
 async fn status_handler(State(state): State<StatusState>) -> Json<StatusSnapshot> {
-    Json(state.status.borrow().clone())
+    Json(refresh_status(state.status.borrow().clone()))
 }
 
 async fn metrics_handler(State(state): State<StatusState>) -> impl IntoResponse {
-    let status = state.status.borrow().clone();
+    let status = refresh_status(state.status.borrow().clone());
     (
         [(header::CONTENT_TYPE, METRICS_CONTENT_TYPE)],
         render_metrics(&status),
     )
+}
+
+fn refresh_status(status: StatusSnapshot) -> StatusSnapshot {
+    #[cfg(feature = "yellowstone-live")]
+    {
+        status.refresh_live_staleness()
+    }
+
+    #[cfg(not(feature = "yellowstone-live"))]
+    {
+        status
+    }
 }
 
 fn render_metrics(status: &StatusSnapshot) -> String {
@@ -284,6 +350,24 @@ fn render_metrics(status: &StatusSnapshot) -> String {
                 "Last Yellowstone reconnect backoff delay in milliseconds.",
                 "",
                 delay_ms,
+            );
+        }
+        if let Some(seconds) = live.seconds_since_last_event {
+            push_gauge(
+                &mut output,
+                "solana_stream_seconds_since_last_event",
+                "Seconds since the last observed Yellowstone event.",
+                "",
+                seconds,
+            );
+        }
+        if let Some(seconds) = live.seconds_since_last_persisted_batch {
+            push_gauge(
+                &mut output,
+                "solana_stream_seconds_since_last_persisted_batch",
+                "Seconds since the last successfully persisted event batch.",
+                "",
+                seconds,
             );
         }
     }
@@ -485,14 +569,19 @@ mod tests {
             write_summary: WriteSummary::default(),
             last_persisted_slot: None,
         };
+        let live = super::LiveProducerStatus::default()
+            .with_reconnecting(
+                3,
+                1_000,
+                "receive",
+                "yellowstone stream receive failed with gRPC status Unavailable",
+            )
+            .with_event_observed_at(10_000)
+            .with_batch_persisted_at(9_000)
+            .refresh_staleness_at(12_500);
         let status =
             StatusSnapshot::from_pipeline_mode(super::StreamMode::Yellowstone, "live", summary)
-                .with_live(super::LiveProducerStatus::reconnecting(
-                    3,
-                    1_000,
-                    "receive",
-                    "yellowstone stream receive failed with gRPC status Unavailable",
-                ));
+                .with_live(live);
 
         let metrics = render_metrics(&status);
 
@@ -502,6 +591,8 @@ mod tests {
         assert!(metrics.contains("solana_stream_reconnect_attempts_total 3"));
         assert!(metrics.contains("solana_stream_producer_up 0"));
         assert!(metrics.contains("solana_stream_reconnect_delay_ms 1000"));
+        assert!(metrics.contains("solana_stream_seconds_since_last_event 2"));
+        assert!(metrics.contains("solana_stream_seconds_since_last_persisted_batch 3"));
     }
 
     #[test]
@@ -561,12 +652,17 @@ mod tests {
             "live-test",
             summary,
         )
-        .with_live(super::LiveProducerStatus::reconnecting(
-            2,
-            2_000,
-            "subscribe",
-            "yellowstone subscribe failed with gRPC status Unavailable",
-        ));
+        .with_live(
+            super::LiveProducerStatus::default()
+                .with_reconnecting(
+                    2,
+                    2_000,
+                    "subscribe",
+                    "yellowstone subscribe failed with gRPC status Unavailable",
+                )
+                .with_event_observed_at(super::current_unix_ms().saturating_sub(2_000))
+                .with_batch_persisted_at(super::current_unix_ms().saturating_sub(3_000)),
+        );
         let (_sender, receiver) = super::status_channel(status);
 
         let response = router(receiver)
@@ -591,6 +687,20 @@ mod tests {
         assert_eq!(
             body["live"]["last_error"],
             "yellowstone subscribe failed with gRPC status Unavailable"
+        );
+        assert!(body["live"]["last_event_at_unix_ms"].is_number());
+        assert!(body["live"]["last_persisted_batch_at_unix_ms"].is_number());
+        assert!(
+            body["live"]["seconds_since_last_event"]
+                .as_u64()
+                .unwrap_or_default()
+                >= 2
+        );
+        assert!(
+            body["live"]["seconds_since_last_persisted_batch"]
+                .as_u64()
+                .unwrap_or_default()
+                >= 3
         );
     }
 

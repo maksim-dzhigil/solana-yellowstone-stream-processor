@@ -31,6 +31,12 @@ pub struct PipelineSummary {
     pub last_persisted_slot: Option<u64>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PipelineActivity {
+    pub slot: u64,
+    pub events_seen: usize,
+}
+
 #[derive(Debug)]
 pub enum PipelineError<W, C> {
     Write(W),
@@ -204,16 +210,47 @@ where
     C: CursorStore + Sync,
     O: FnMut(PipelineSummary) + Send,
 {
+    run_event_producer_pipeline_with_progress_and_activity(
+        producer,
+        writer,
+        cursor_store,
+        stream_name,
+        config,
+        on_progress,
+        |_| {},
+    )
+    .await
+}
+
+pub async fn run_event_producer_pipeline_with_progress_and_activity<P, F, E, W, C, O, A>(
+    producer: P,
+    writer: &W,
+    cursor_store: &C,
+    stream_name: &str,
+    config: PipelineConfig,
+    on_progress: O,
+    on_activity: A,
+) -> Result<PipelineSummary, ProducerPipelineError<W::Error, C::Error, E>>
+where
+    P: FnOnce(mpsc::Sender<NormalizedEvent>) -> F + Send + 'static,
+    F: Future<Output = Result<(), E>> + Send + 'static,
+    E: Send + 'static,
+    W: EventWriter + Sync,
+    C: CursorStore + Sync,
+    O: FnMut(PipelineSummary) + Send,
+    A: FnMut(PipelineActivity) + Send,
+{
     let (sender, receiver) = mpsc::channel(config.channel_capacity);
     let mut producer = AbortOnDrop::new(tokio::spawn(producer(sender)));
 
-    let result = run_event_receiver_pipeline_with_progress(
+    let result = run_event_receiver_pipeline_with_progress_and_activity(
         receiver,
         writer,
         cursor_store,
         stream_name,
         config,
         on_progress,
+        on_activity,
     )
     .await;
 
@@ -254,17 +291,44 @@ where
 }
 
 async fn run_event_receiver_pipeline_with_progress<W, C, O>(
+    events: mpsc::Receiver<NormalizedEvent>,
+    writer: &W,
+    cursor_store: &C,
+    stream_name: &str,
+    config: PipelineConfig,
+    on_progress: O,
+) -> Result<PipelineSummary, PipelineError<W::Error, C::Error>>
+where
+    W: EventWriter + Sync,
+    C: CursorStore + Sync,
+    O: FnMut(PipelineSummary) + Send,
+{
+    run_event_receiver_pipeline_with_progress_and_activity(
+        events,
+        writer,
+        cursor_store,
+        stream_name,
+        config,
+        on_progress,
+        |_| {},
+    )
+    .await
+}
+
+async fn run_event_receiver_pipeline_with_progress_and_activity<W, C, O, A>(
     mut events: mpsc::Receiver<NormalizedEvent>,
     writer: &W,
     cursor_store: &C,
     stream_name: &str,
     config: PipelineConfig,
     mut on_progress: O,
+    mut on_activity: A,
 ) -> Result<PipelineSummary, PipelineError<W::Error, C::Error>>
 where
     W: EventWriter + Sync,
     C: CursorStore + Sync,
     O: FnMut(PipelineSummary) + Send,
+    A: FnMut(PipelineActivity) + Send,
 {
     let mut batcher = Batcher::new(config.batch_size);
     let mut summary = PipelineSummary {
@@ -275,6 +339,10 @@ where
 
     while let Some(event) = events.recv().await {
         summary.events_seen += 1;
+        on_activity(PipelineActivity {
+            slot: event.slot(),
+            events_seen: summary.events_seen,
+        });
 
         if should_skip_event(&event, config.resume_after_slot) {
             summary.events_skipped += 1;
@@ -349,7 +417,8 @@ mod tests {
     use super::{
         PipelineConfig, PipelineError, PipelineSummary, ProducerPipelineError,
         run_event_producer_pipeline, run_event_producer_pipeline_with_progress,
-        run_event_receiver_pipeline, run_replay_pipeline, send_events,
+        run_event_producer_pipeline_with_progress_and_activity, run_event_receiver_pipeline,
+        run_replay_pipeline, send_events,
     };
     use async_trait::async_trait;
     use serde_json::json;
@@ -583,6 +652,42 @@ mod tests {
         assert_eq!(progress[1].batches_written, 1);
         assert_eq!(progress[2].last_persisted_slot, Some(3));
         assert_eq!(progress[2].batches_written, 2);
+    }
+
+    #[tokio::test]
+    async fn producer_pipeline_reports_event_activity() {
+        let writer = FakeWriter::default();
+        let cursor_store = FakeCursorStore::default();
+        let activity = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let activity_for_callback = activity.clone();
+
+        let summary = run_event_producer_pipeline_with_progress_and_activity(
+            |sender| async move {
+                sender.send(event(1)).await.expect("send first event");
+                sender.send(event(2)).await.expect("send second event");
+                sender.send(event(3)).await.expect("send third event");
+                Ok::<(), FakeError>(())
+            },
+            &writer,
+            &cursor_store,
+            "producer",
+            config(2),
+            |_| {},
+            move |event| {
+                activity_for_callback
+                    .lock()
+                    .expect("activity lock")
+                    .push((event.slot, event.events_seen));
+            },
+        )
+        .await
+        .expect("producer pipeline should run");
+
+        assert_eq!(summary.events_seen, 3);
+        assert_eq!(
+            *activity.lock().expect("activity lock"),
+            vec![(1, 1), (2, 2), (3, 3)]
+        );
     }
 
     #[tokio::test]
