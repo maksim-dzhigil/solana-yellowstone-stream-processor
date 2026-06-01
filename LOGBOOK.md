@@ -1,3 +1,11 @@
+## 2026-06-01
+
+- Added Yellowstone reconnect with bounded exponential backoff for transient connect/subscribe/receive failures.
+- Added coordinated Yellowstone live shutdown so HTTP and ingest tasks stop together on shutdown signals.
+- Added concurrent HTTP `/healthz`, `/readyz`, `/status`, and `/metrics` endpoints while Yellowstone live ingestion is running.
+- Added watch-backed live status snapshots and pipeline progress callbacks after successful batch persistence.
+- Added configurable Yellowstone subscription selection and transaction account include/exclude/required filters for provider-side live stream narrowing.
+
 ## 2026-05-31
 
 - Hardened secret redaction for config/debug/error output so database URLs, Yellowstone endpoints, and tokens are not logged accidentally.
