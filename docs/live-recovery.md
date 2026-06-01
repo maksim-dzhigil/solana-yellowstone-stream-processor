@@ -56,5 +56,5 @@ The current implementation does not yet prove gap-free live recovery:
 ## Next Implementation Steps
 
 - Fill a provider compatibility profile for the first real Yellowstone provider.
-- Add a finalized-slot reconciliation design before changing cursor semantics.
+- Implement the finalized-slot reconciliation design in [finalized-reconciliation.md](finalized-reconciliation.md) before changing cursor semantics.
 - Add provider-specific integration tests once a concrete Yellowstone provider profile is selected.
