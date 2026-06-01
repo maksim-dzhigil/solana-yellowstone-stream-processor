@@ -1,8 +1,8 @@
 use axum::{Json, Router, extract::State, http::header, response::IntoResponse, routing::get};
 use serde::Serialize;
 use solana_yellowstone_stream::pipeline::PipelineSummary;
-use std::{fmt, future::Future, sync::Arc};
-use tokio::net::TcpListener;
+use std::{fmt, future::Future};
+use tokio::{net::TcpListener, sync::watch};
 
 const METRICS_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
 
@@ -12,9 +12,18 @@ pub enum HealthState {
     Ready,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StreamMode {
+    Replay,
+    #[cfg(feature = "yellowstone-live")]
+    Yellowstone,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct StatusSnapshot {
     pub health: HealthState,
+    pub mode: StreamMode,
     pub stream_name: String,
     pub last_persisted_slot: Option<u64>,
     pub events_seen: usize,
@@ -27,8 +36,17 @@ pub struct StatusSnapshot {
 
 impl StatusSnapshot {
     pub fn from_pipeline(stream_name: impl Into<String>, summary: PipelineSummary) -> Self {
+        Self::from_pipeline_mode(StreamMode::Replay, stream_name, summary)
+    }
+
+    pub fn from_pipeline_mode(
+        mode: StreamMode,
+        stream_name: impl Into<String>,
+        summary: PipelineSummary,
+    ) -> Self {
         Self {
             health: HealthState::Ready,
+            mode,
             stream_name: stream_name.into(),
             last_persisted_slot: summary.last_persisted_slot,
             events_seen: summary.events_seen,
@@ -39,6 +57,18 @@ impl StatusSnapshot {
             events_deduplicated: summary.write_summary.deduplicated,
         }
     }
+}
+
+pub type StatusSender = watch::Sender<StatusSnapshot>;
+pub type StatusReceiver = watch::Receiver<StatusSnapshot>;
+
+#[derive(Debug, Clone)]
+struct StatusState {
+    status: StatusReceiver,
+}
+
+pub fn status_channel(initial: StatusSnapshot) -> (StatusSender, StatusReceiver) {
+    watch::channel(initial)
 }
 
 #[derive(Debug)]
@@ -65,12 +95,28 @@ impl std::error::Error for HttpError {
 }
 
 pub async fn serve(addr: &str, status: StatusSnapshot) -> Result<(), HttpError> {
-    serve_until_shutdown(addr, status, shutdown_signal()).await
+    let (_sender, receiver) = status_channel(status);
+    serve_updates_until_shutdown(addr, receiver, shutdown_signal()).await
 }
 
+#[cfg(feature = "yellowstone-live")]
+pub async fn serve_updates(addr: &str, status: StatusReceiver) -> Result<(), HttpError> {
+    serve_updates_until_shutdown(addr, status, shutdown_signal()).await
+}
+
+#[cfg(test)]
 async fn serve_until_shutdown(
     addr: &str,
     status: StatusSnapshot,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> Result<(), HttpError> {
+    let (_sender, receiver) = status_channel(status);
+    serve_updates_until_shutdown(addr, receiver, shutdown).await
+}
+
+async fn serve_updates_until_shutdown(
+    addr: &str,
+    status: StatusReceiver,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<(), HttpError> {
     let listener = TcpListener::bind(addr).await.map_err(HttpError::Bind)?;
@@ -87,8 +133,8 @@ async fn shutdown_signal() {
     tracing::info!("shutdown signal received");
 }
 
-fn router(snapshot: StatusSnapshot) -> Router {
-    let state = Arc::new(snapshot);
+fn router(status: StatusReceiver) -> Router {
+    let state = StatusState { status };
 
     Router::new()
         .route("/healthz", get(healthz))
@@ -102,27 +148,34 @@ async fn healthz() -> &'static str {
     "ok"
 }
 
-async fn readyz(State(status): State<Arc<StatusSnapshot>>) -> Json<ReadyResponse> {
+async fn readyz(State(state): State<StatusState>) -> Json<ReadyResponse> {
+    let status = state.status.borrow();
     Json(ReadyResponse {
         ready: status.health == HealthState::Ready,
     })
 }
 
-async fn status_handler(State(status): State<Arc<StatusSnapshot>>) -> Json<StatusSnapshot> {
-    Json((*status).clone())
+async fn status_handler(State(state): State<StatusState>) -> Json<StatusSnapshot> {
+    Json(state.status.borrow().clone())
 }
 
-async fn metrics_handler(State(status): State<Arc<StatusSnapshot>>) -> impl IntoResponse {
+async fn metrics_handler(State(state): State<StatusState>) -> impl IntoResponse {
+    let status = state.status.borrow().clone();
     (
         [(header::CONTENT_TYPE, METRICS_CONTENT_TYPE)],
-        render_metrics(status.as_ref()),
+        render_metrics(&status),
     )
 }
 
 fn render_metrics(status: &StatusSnapshot) -> String {
     let mut output = String::new();
     let stream_name = escape_label_value(&status.stream_name);
-    let info_labels = format!(r#"{{stream_name="{stream_name}"}}"#);
+    let mode = match status.mode {
+        StreamMode::Replay => "replay",
+        #[cfg(feature = "yellowstone-live")]
+        StreamMode::Yellowstone => "yellowstone",
+    };
+    let info_labels = format!(r#"{{stream_name="{stream_name}",mode="{mode}"}}"#);
 
     push_gauge(
         &mut output,
@@ -291,6 +344,7 @@ mod tests {
         let status = StatusSnapshot::from_pipeline("replay", summary);
 
         assert_eq!(status.health, HealthState::Ready);
+        assert_eq!(status.mode, super::StreamMode::Replay);
         assert_eq!(status.stream_name, "replay");
         assert_eq!(status.last_persisted_slot, Some(42));
         assert_eq!(status.events_seen, 10);
@@ -318,7 +372,7 @@ mod tests {
         let metrics = render_metrics(&status);
 
         assert!(metrics.contains("# TYPE solana_stream_events_seen_total counter"));
-        assert!(metrics.contains("solana_stream_info{stream_name=\"replay\"} 1"));
+        assert!(metrics.contains("solana_stream_info{stream_name=\"replay\",mode=\"replay\"} 1"));
         assert!(metrics.contains("solana_stream_events_seen_total 10"));
         assert!(metrics.contains("solana_stream_events_skipped_total 4"));
         assert!(metrics.contains("solana_stream_events_inserted_total 5"));
@@ -376,6 +430,7 @@ mod tests {
         assert_content_type_starts_with(&response, "application/json");
         let body: Value = serde_json::from_str(&response.body).expect("status json should parse");
         assert_eq!(body["health"], "ready");
+        assert_eq!(body["mode"], "replay");
         assert_eq!(body["stream_name"], "contract-test");
         assert_eq!(body["last_persisted_slot"], 42);
         assert_eq!(body["events_seen"], 10);
@@ -400,7 +455,7 @@ mod tests {
         assert!(
             response
                 .body
-                .contains("solana_stream_info{stream_name=\"contract-test\"} 1")
+                .contains("solana_stream_info{stream_name=\"contract-test\",mode=\"replay\"} 1")
         );
         assert!(response.body.contains("solana_stream_events_seen_total 10"));
         assert!(
@@ -457,7 +512,8 @@ mod tests {
     }
 
     async fn request(path: &str) -> TestResponse {
-        let response = router(contract_status())
+        let (_sender, receiver) = super::status_channel(contract_status());
+        let response = router(receiver)
             .oneshot(
                 Request::builder()
                     .uri(path)

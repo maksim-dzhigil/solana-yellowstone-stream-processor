@@ -144,11 +144,45 @@ where
     W: EventWriter + Sync,
     C: CursorStore + Sync,
 {
+    run_event_producer_pipeline_with_progress(
+        producer,
+        writer,
+        cursor_store,
+        stream_name,
+        config,
+        |_| {},
+    )
+    .await
+}
+
+pub async fn run_event_producer_pipeline_with_progress<P, F, E, W, C, O>(
+    producer: P,
+    writer: &W,
+    cursor_store: &C,
+    stream_name: &str,
+    config: PipelineConfig,
+    on_progress: O,
+) -> Result<PipelineSummary, ProducerPipelineError<W::Error, C::Error, E>>
+where
+    P: FnOnce(mpsc::Sender<NormalizedEvent>) -> F + Send + 'static,
+    F: Future<Output = Result<(), E>> + Send + 'static,
+    E: Send + 'static,
+    W: EventWriter + Sync,
+    C: CursorStore + Sync,
+    O: FnMut(PipelineSummary) + Send,
+{
     let (sender, receiver) = mpsc::channel(config.channel_capacity);
     let producer = tokio::spawn(producer(sender));
 
-    let result =
-        run_event_receiver_pipeline(receiver, writer, cursor_store, stream_name, config).await;
+    let result = run_event_receiver_pipeline_with_progress(
+        receiver,
+        writer,
+        cursor_store,
+        stream_name,
+        config,
+        on_progress,
+    )
+    .await;
 
     match result {
         Err(err) => {
@@ -165,7 +199,7 @@ where
 }
 
 pub async fn run_event_receiver_pipeline<W, C>(
-    mut events: mpsc::Receiver<NormalizedEvent>,
+    events: mpsc::Receiver<NormalizedEvent>,
     writer: &W,
     cursor_store: &C,
     stream_name: &str,
@@ -175,11 +209,36 @@ where
     W: EventWriter + Sync,
     C: CursorStore + Sync,
 {
+    run_event_receiver_pipeline_with_progress(
+        events,
+        writer,
+        cursor_store,
+        stream_name,
+        config,
+        |_| {},
+    )
+    .await
+}
+
+async fn run_event_receiver_pipeline_with_progress<W, C, O>(
+    mut events: mpsc::Receiver<NormalizedEvent>,
+    writer: &W,
+    cursor_store: &C,
+    stream_name: &str,
+    config: PipelineConfig,
+    mut on_progress: O,
+) -> Result<PipelineSummary, PipelineError<W::Error, C::Error>>
+where
+    W: EventWriter + Sync,
+    C: CursorStore + Sync,
+    O: FnMut(PipelineSummary) + Send,
+{
     let mut batcher = Batcher::new(config.batch_size);
     let mut summary = PipelineSummary {
         last_persisted_slot: config.resume_after_slot,
         ..PipelineSummary::default()
     };
+    on_progress(summary);
 
     while let Some(event) = events.recv().await {
         summary.events_seen += 1;
@@ -191,6 +250,7 @@ where
 
         if let Some(batch) = batcher.push(event) {
             write_batch(writer, cursor_store, stream_name, &batch, &mut summary).await?;
+            on_progress(summary);
         }
     }
 
@@ -198,6 +258,7 @@ where
         write_batch(writer, cursor_store, stream_name, &batch, &mut summary).await?;
     }
 
+    on_progress(summary);
     Ok(summary)
 }
 
@@ -253,7 +314,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        PipelineConfig, PipelineError, ProducerPipelineError, run_event_producer_pipeline,
+        PipelineConfig, PipelineError, PipelineSummary, ProducerPipelineError,
+        run_event_producer_pipeline, run_event_producer_pipeline_with_progress,
         run_event_receiver_pipeline, run_replay_pipeline, send_events,
     };
     use async_trait::async_trait;
@@ -450,6 +512,44 @@ mod tests {
         assert_eq!(summary.events_seen, 2);
         assert_eq!(summary.batches_written, 1);
         assert_eq!(summary.last_persisted_slot, Some(2));
+    }
+
+    #[tokio::test]
+    async fn producer_pipeline_reports_progress_after_successful_batch_writes() {
+        let writer = FakeWriter::default();
+        let cursor_store = FakeCursorStore::default();
+        let progress = std::sync::Arc::new(std::sync::Mutex::new(Vec::<PipelineSummary>::new()));
+        let progress_for_callback = progress.clone();
+
+        let summary = run_event_producer_pipeline_with_progress(
+            |sender| async move {
+                sender.send(event(1)).await.expect("send first event");
+                sender.send(event(2)).await.expect("send second event");
+                sender.send(event(3)).await.expect("send third event");
+                Ok::<(), FakeError>(())
+            },
+            &writer,
+            &cursor_store,
+            "producer",
+            config(2),
+            move |summary| {
+                progress_for_callback
+                    .lock()
+                    .expect("progress lock")
+                    .push(summary);
+            },
+        )
+        .await
+        .expect("producer pipeline should run");
+
+        assert_eq!(summary.last_persisted_slot, Some(3));
+        let progress = progress.lock().expect("progress lock");
+        assert_eq!(progress.len(), 3);
+        assert_eq!(progress[0].last_persisted_slot, None);
+        assert_eq!(progress[1].last_persisted_slot, Some(2));
+        assert_eq!(progress[1].batches_written, 1);
+        assert_eq!(progress[2].last_persisted_slot, Some(3));
+        assert_eq!(progress[2].batches_written, 2);
     }
 
     #[tokio::test]

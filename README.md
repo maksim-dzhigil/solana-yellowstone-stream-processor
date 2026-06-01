@@ -2,7 +2,7 @@
 
 Reliability-first Rust service for ingesting Solana stream events from replay fixtures or feature-gated Yellowstone gRPC into durable PostgreSQL storage.
 
-Current status: replay MVP is the stable default path. Live Yellowstone ingestion exists behind the `yellowstone-live` feature with a conservative slots-only subscription by default; provider reconnect and gap recovery policy are still future work.
+Current status: replay MVP is the stable default path. Live Yellowstone ingestion exists behind the `yellowstone-live` feature with conservative slots-only defaults, opt-in transaction/block/entry subscriptions, transaction account filters, and concurrent HTTP status endpoints; provider reconnect and gap recovery policy are still future work.
 
 ## Architecture
 
@@ -26,17 +26,18 @@ flowchart LR
     C --> B[Batcher]
     B --> P[(PostgreSQL Events)]
     B --> CUR[(Cursor State)]
+    B --> H[Health / Status / Metrics]
 ```
 
 ## What Works
 
 - JSONL replay ingestion with one-shot and HTTP-serving modes.
-- Feature-gated Yellowstone gRPC producer with `x-token` metadata support and configurable coarse subscription filters.
+- Feature-gated Yellowstone gRPC producer with `x-token` metadata support, configurable coarse subscription filters, and transaction account filters.
 - Normalized event model with versioned, source-oriented event identities.
 - Bounded producer-to-pipeline channel, batching, PostgreSQL writes, deduplication, and cursor persistence.
 - Idempotent writes through stable `event_id` values and `ON CONFLICT DO NOTHING`.
 - Replay resume from persisted stream cursor.
-- HTTP `/healthz`, `/readyz`, `/status`, and `/metrics` after replay completion.
+- HTTP `/healthz`, `/readyz`, `/status`, and `/metrics` after replay completion and concurrently during live Yellowstone ingestion.
 - Structured logs with redacted config/debug/error output for database URLs, Yellowstone endpoints, and tokens.
 - Unit, binary, HTTP contract, integration, and PostgreSQL-backed tests.
 
@@ -63,7 +64,7 @@ Current `event_id` values are derived from typed source identity, not payload co
 
 - Live Yellowstone mode is available only with `--features yellowstone-live`.
 - Live Yellowstone defaults to slots-only subscription; broader transaction/block/entry subscriptions are opt-in.
-- Live mode currently runs ingestion in the foreground and does not serve concurrent HTTP status endpoints.
+- Live mode currently exits if the Yellowstone producer exits; reconnect/backoff is not implemented yet.
 - Provider-specific reconnect, replay, and gap recovery semantics are not implemented yet.
 - Cursor progress is currently based on the maximum slot in each successful batch; this is not a gap-free live recovery guarantee.
 - Replay currently loads the configured JSONL file before entering the bounded channel.
@@ -137,7 +138,7 @@ Equivalent CLI mode selection:
 cargo run -p solana-yellowstone-stream-processor --features yellowstone-live -- --mode yellowstone --yellowstone-endpoint https://provider.example --yellowstone-cluster mainnet-beta --yellowstone-subscriptions slots,transactions --yellowstone-transaction-account-include TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA
 ```
 
-Replay HTTP endpoints:
+HTTP endpoints:
 
 ```text
 GET /healthz

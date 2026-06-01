@@ -1,11 +1,15 @@
 use crate::config::{Config, RunMode};
 use crate::error::AppRunError;
+#[cfg(feature = "yellowstone-live")]
+use crate::http::StreamMode;
 use crate::http::{self, StatusSnapshot};
 use solana_yellowstone_storage::{
     CursorStore, cursor::PostgresCursorStore, postgres::PostgresEventWriter,
 };
 #[cfg(feature = "yellowstone-live")]
-use solana_yellowstone_stream::pipeline::run_event_producer_pipeline;
+use solana_yellowstone_stream::pipeline::PipelineSummary;
+#[cfg(feature = "yellowstone-live")]
+use solana_yellowstone_stream::pipeline::run_event_producer_pipeline_with_progress;
 use solana_yellowstone_stream::pipeline::{PipelineConfig, run_replay_pipeline};
 use solana_yellowstone_stream::replay::ReplaySource;
 use solana_yellowstone_stream::source::EventSource;
@@ -160,27 +164,60 @@ async fn run_yellowstone(config: Config) -> Result<(), AppRunError> {
         "running yellowstone pipeline"
     );
 
-    let summary = run_event_producer_pipeline(
+    let initial_summary = PipelineSummary {
+        last_persisted_slot: resume_after_slot,
+        ..PipelineSummary::default()
+    };
+    let initial_status = StatusSnapshot::from_pipeline_mode(
+        StreamMode::Yellowstone,
+        config.stream_name.clone(),
+        initial_summary,
+    );
+    let (status_sender, status_receiver) = http::status_channel(initial_status);
+    let status_stream_name = config.stream_name.clone();
+
+    let http_server = http::serve_updates(&config.http_addr, status_receiver);
+    let pipeline = run_event_producer_pipeline_with_progress(
         move |sender| run_yellowstone_grpc_producer(yellowstone_config, sender),
         &writer,
         &cursor_store,
         &config.stream_name,
         pipeline_config,
-    )
-    .await?;
-
-    info!(
-        events_seen = summary.events_seen,
-        events_skipped = summary.events_skipped,
-        batches_written = summary.batches_written,
-        events_attempted = summary.write_summary.attempted,
-        events_inserted = summary.write_summary.inserted,
-        events_deduplicated = summary.write_summary.deduplicated,
-        last_persisted_slot = ?summary.last_persisted_slot,
-        "yellowstone pipeline completed"
+        move |summary| {
+            let status = StatusSnapshot::from_pipeline_mode(
+                StreamMode::Yellowstone,
+                status_stream_name.clone(),
+                summary,
+            );
+            if status_sender.send(status).is_err() {
+                tracing::debug!("yellowstone status receiver dropped");
+            }
+        },
     );
+    tokio::pin!(http_server);
+    tokio::pin!(pipeline);
 
-    Ok(())
+    tokio::select! {
+        result = &mut http_server => {
+            result?;
+            info!("yellowstone http server stopped");
+            Ok(())
+        }
+        result = &mut pipeline => {
+            let summary = result?;
+            info!(
+                events_seen = summary.events_seen,
+                events_skipped = summary.events_skipped,
+                batches_written = summary.batches_written,
+                events_attempted = summary.write_summary.attempted,
+                events_inserted = summary.write_summary.inserted,
+                events_deduplicated = summary.write_summary.deduplicated,
+                last_persisted_slot = ?summary.last_persisted_slot,
+                "yellowstone pipeline completed"
+            );
+            Ok(())
+        }
+    }
 }
 
 #[cfg(not(feature = "yellowstone-live"))]
