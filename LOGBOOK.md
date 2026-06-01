@@ -1,10 +1,10 @@
 ## 2026-06-01
 
-- Added Yellowstone reconnect with bounded exponential backoff for transient connect/subscribe/receive failures.
-- Added coordinated Yellowstone live shutdown so HTTP and ingest tasks stop together on shutdown signals.
-- Added concurrent HTTP `/healthz`, `/readyz`, `/status`, and `/metrics` endpoints while Yellowstone live ingestion is running.
-- Added watch-backed live status snapshots and pipeline progress callbacks after successful batch persistence.
-- Added configurable Yellowstone subscription selection and transaction account include/exclude/required filters for provider-side live stream narrowing.
+- Advanced Yellowstone live mode from configurable ingestion to an operationally observable runtime: provider-side filters, concurrent HTTP status endpoints, coordinated shutdown, reconnect backoff, retry tuning, and safe reconnect error summaries.
+- Added live recovery telemetry for producer/recovery state, staleness, observed-to-persisted slot lag, reconnect `from_slot`, and local gap-risk metrics.
+- Refreshed reconnect behavior to use the latest persisted cursor as `from_slot` and covered the reconnect loop with a focused unit test.
+- Documented live recovery limits, provider compatibility requirements, candidate provider matrix, and finalized-slot reconciliation design without claiming gap-free recovery.
+- Reorganized project documentation into a compact README plus focused docs for configuration, event identity, provider validation, and recovery design.
 
 ## 2026-05-31
 
