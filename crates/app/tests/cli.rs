@@ -46,6 +46,22 @@ fn exits_with_config_error_for_yellowstone_mode_without_endpoint() {
         ));
 }
 
+#[test]
+fn exits_with_config_error_for_invalid_yellowstone_subscriptions() {
+    command()
+        .arg("--mode")
+        .arg("yellowstone")
+        .arg("--yellowstone-endpoint")
+        .arg("https://provider.example")
+        .arg("--yellowstone-subscriptions")
+        .arg("accounts")
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "configuration error: --yellowstone-subscriptions must be a comma-separated list containing slots, transactions, blocks, or entries",
+        ));
+}
+
 #[cfg(not(feature = "yellowstone-live"))]
 #[test]
 fn exits_with_yellowstone_runtime_placeholder_after_valid_config() {

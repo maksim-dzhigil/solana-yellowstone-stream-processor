@@ -101,6 +101,7 @@ async fn run_yellowstone(config: Config) -> Result<(), AppRunError> {
         yellowstone_endpoint_configured = config.yellowstone_endpoint.is_some(),
         yellowstone_x_token_configured = config.yellowstone_x_token.is_some(),
         yellowstone_cluster = %config.yellowstone_cluster,
+        yellowstone_subscriptions = %config.yellowstone_subscriptions.as_csv(),
         "yellowstone live mode selected"
     );
 
@@ -132,6 +133,10 @@ async fn run_yellowstone(config: Config) -> Result<(), AppRunError> {
     yellowstone_config.x_token = config.yellowstone_x_token.clone();
     yellowstone_config.from_slot = resume_after_slot;
     yellowstone_config.filter_name = config.stream_name.clone();
+    yellowstone_config.subscribe_slots = config.yellowstone_subscriptions.slots;
+    yellowstone_config.subscribe_transactions = config.yellowstone_subscriptions.transactions;
+    yellowstone_config.subscribe_blocks = config.yellowstone_subscriptions.blocks;
+    yellowstone_config.subscribe_entries = config.yellowstone_subscriptions.entries;
 
     let pipeline_config = PipelineConfig {
         batch_size: config.batch_size,
@@ -176,6 +181,7 @@ async fn run_yellowstone(config: Config) -> Result<(), AppRunError> {
         yellowstone_endpoint_configured = config.yellowstone_endpoint.is_some(),
         yellowstone_x_token_configured = config.yellowstone_x_token.is_some(),
         yellowstone_cluster = %config.yellowstone_cluster,
+        yellowstone_subscriptions = %config.yellowstone_subscriptions.as_csv(),
         "yellowstone live mode selected"
     );
 

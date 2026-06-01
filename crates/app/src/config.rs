@@ -32,6 +32,42 @@ impl From<CliRunMode> for RunMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct YellowstoneSubscriptions {
+    pub slots: bool,
+    pub transactions: bool,
+    pub blocks: bool,
+    pub entries: bool,
+}
+
+impl YellowstoneSubscriptions {
+    pub fn slots_only() -> Self {
+        Self {
+            slots: true,
+            transactions: false,
+            blocks: false,
+            entries: false,
+        }
+    }
+
+    pub fn as_csv(&self) -> String {
+        let mut values = Vec::new();
+        if self.slots {
+            values.push("slots");
+        }
+        if self.transactions {
+            values.push("transactions");
+        }
+        if self.blocks {
+            values.push("blocks");
+        }
+        if self.entries {
+            values.push("entries");
+        }
+        values.join(",")
+    }
+}
+
 #[derive(Clone)]
 pub struct Config {
     pub run_mode: RunMode,
@@ -46,6 +82,7 @@ pub struct Config {
     pub yellowstone_endpoint: Option<String>,
     pub yellowstone_x_token: Option<String>,
     pub yellowstone_cluster: String,
+    pub yellowstone_subscriptions: YellowstoneSubscriptions,
 }
 
 impl fmt::Debug for Config {
@@ -69,6 +106,10 @@ impl fmt::Debug for Config {
                 &self.yellowstone_x_token.is_some(),
             )
             .field("yellowstone_cluster", &self.yellowstone_cluster)
+            .field(
+                "yellowstone_subscriptions",
+                &self.yellowstone_subscriptions.as_csv(),
+            )
             .finish()
     }
 }
@@ -104,6 +145,7 @@ impl Config {
             yellowstone_endpoint: env_optional_non_empty(source, "YELLOWSTONE_ENDPOINT")?,
             yellowstone_x_token: env_optional_non_empty(source, "YELLOWSTONE_X_TOKEN")?,
             yellowstone_cluster: env_or_default(source, "YELLOWSTONE_CLUSTER", "mainnet-beta")?,
+            yellowstone_subscriptions: env_yellowstone_subscriptions_or_default(source)?,
         })
     }
 
@@ -131,6 +173,13 @@ impl Config {
         {
             self.yellowstone_cluster = value.to_owned();
         }
+        if let Some(value) = non_empty_cli_value(
+            "--yellowstone-subscriptions",
+            args.yellowstone_subscriptions.as_deref(),
+        )? {
+            self.yellowstone_subscriptions =
+                parse_yellowstone_subscriptions("--yellowstone-subscriptions", value)?;
+        }
         if args.exit_after_replay {
             self.exit_after_replay = true;
         }
@@ -140,7 +189,7 @@ impl Config {
 
     pub fn redacted_summary(&self) -> String {
         format!(
-            "run_mode={}; http_addr={}; replay_path={}; stream_name={}; exit_after_replay={}; batch_size={}; channel_capacity={}; database_url_configured={}; yellowstone_endpoint_configured={}; yellowstone_x_token_configured={}; yellowstone_cluster={}",
+            "run_mode={}; http_addr={}; replay_path={}; stream_name={}; exit_after_replay={}; batch_size={}; channel_capacity={}; database_url_configured={}; yellowstone_endpoint_configured={}; yellowstone_x_token_configured={}; yellowstone_cluster={}; yellowstone_subscriptions={}",
             self.run_mode,
             self.http_addr,
             self.replay_path,
@@ -152,6 +201,7 @@ impl Config {
             self.yellowstone_endpoint.is_some(),
             self.yellowstone_x_token.is_some(),
             self.yellowstone_cluster,
+            self.yellowstone_subscriptions.as_csv(),
         )
     }
 
@@ -217,6 +267,48 @@ fn env_or_default(
     }
 }
 
+fn env_yellowstone_subscriptions_or_default(
+    source: &impl ConfigSource,
+) -> Result<YellowstoneSubscriptions, ConfigError> {
+    match source.get("YELLOWSTONE_SUBSCRIPTIONS")? {
+        Some(value) if value.trim().is_empty() => Err(ConfigError::Empty {
+            key: "YELLOWSTONE_SUBSCRIPTIONS",
+        }),
+        Some(value) => parse_yellowstone_subscriptions("YELLOWSTONE_SUBSCRIPTIONS", &value),
+        None => Ok(YellowstoneSubscriptions::slots_only()),
+    }
+}
+
+fn parse_yellowstone_subscriptions(
+    key: &'static str,
+    value: &str,
+) -> Result<YellowstoneSubscriptions, ConfigError> {
+    let mut subscriptions = YellowstoneSubscriptions {
+        slots: false,
+        transactions: false,
+        blocks: false,
+        entries: false,
+    };
+
+    for raw_item in value.split(',') {
+        let item = raw_item.trim();
+        match item {
+            "slots" => subscriptions.slots = true,
+            "transactions" => subscriptions.transactions = true,
+            "blocks" => subscriptions.blocks = true,
+            "entries" => subscriptions.entries = true,
+            _ => {
+                return Err(ConfigError::InvalidYellowstoneSubscription {
+                    key,
+                    value: value.to_owned(),
+                });
+            }
+        }
+    }
+
+    Ok(subscriptions)
+}
+
 fn env_optional_non_empty(
     source: &impl ConfigSource,
     key: &'static str,
@@ -250,7 +342,7 @@ fn env_positive_usize_or_default(
 
 #[cfg(test)]
 mod tests {
-    use super::{Config, ConfigSource, RunMode};
+    use super::{Config, ConfigSource, RunMode, YellowstoneSubscriptions};
     use crate::cli::{CliArgs, CliRunMode};
     use crate::error::ConfigError;
     use std::collections::HashMap;
@@ -292,6 +384,10 @@ mod tests {
         assert_eq!(config.yellowstone_endpoint, None);
         assert_eq!(config.yellowstone_x_token, None);
         assert_eq!(config.yellowstone_cluster, "mainnet-beta");
+        assert_eq!(
+            config.yellowstone_subscriptions,
+            YellowstoneSubscriptions::slots_only()
+        );
     }
 
     #[test]
@@ -306,7 +402,11 @@ mod tests {
             .with("STREAM_CHANNEL_CAPACITY", "2048")
             .with("YELLOWSTONE_ENDPOINT", "https://example.test")
             .with("YELLOWSTONE_X_TOKEN", "secret-token")
-            .with("YELLOWSTONE_CLUSTER", "devnet");
+            .with("YELLOWSTONE_CLUSTER", "devnet")
+            .with(
+                "YELLOWSTONE_SUBSCRIPTIONS",
+                "slots,transactions,blocks,entries",
+            );
 
         let config = Config::from_source(&source)
             .expect("config should load")
@@ -326,6 +426,15 @@ mod tests {
         );
         assert_eq!(config.yellowstone_x_token.as_deref(), Some("secret-token"));
         assert_eq!(config.yellowstone_cluster, "devnet");
+        assert_eq!(
+            config.yellowstone_subscriptions,
+            YellowstoneSubscriptions {
+                slots: true,
+                transactions: true,
+                blocks: true,
+                entries: true,
+            }
+        );
     }
 
     #[test]
@@ -397,6 +506,7 @@ mod tests {
                 http_addr: Some("127.0.0.1:9000".to_owned()),
                 yellowstone_endpoint: Some("https://example.test".to_owned()),
                 yellowstone_cluster: Some("devnet".to_owned()),
+                yellowstone_subscriptions: Some("transactions,blocks".to_owned()),
                 exit_after_replay: true,
             })
             .expect("cli overrides should apply");
@@ -410,6 +520,15 @@ mod tests {
             Some("https://example.test")
         );
         assert_eq!(config.yellowstone_cluster, "devnet");
+        assert_eq!(
+            config.yellowstone_subscriptions,
+            YellowstoneSubscriptions {
+                slots: false,
+                transactions: true,
+                blocks: true,
+                entries: false,
+            }
+        );
         assert!(config.exit_after_replay);
         assert_eq!(
             config.database_url,
@@ -462,6 +581,21 @@ mod tests {
             ConfigError::MissingRequired {
                 key: "YELLOWSTONE_ENDPOINT",
                 context: "RUN_MODE=yellowstone"
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_yellowstone_subscription_values() {
+        let source = FakeEnv::default().with("YELLOWSTONE_SUBSCRIPTIONS", "slots,accounts");
+
+        let err = Config::from_source(&source).expect_err("invalid subscriptions should fail");
+
+        assert_eq!(
+            err,
+            ConfigError::InvalidYellowstoneSubscription {
+                key: "YELLOWSTONE_SUBSCRIPTIONS",
+                value: "slots,accounts".to_owned()
             }
         );
     }

@@ -31,7 +31,7 @@ flowchart LR
 ## What Works
 
 - JSONL replay ingestion with one-shot and HTTP-serving modes.
-- Feature-gated Yellowstone gRPC producer with `x-token` metadata support.
+- Feature-gated Yellowstone gRPC producer with `x-token` metadata support and configurable coarse subscription filters.
 - Normalized event model with versioned, source-oriented event identities.
 - Bounded producer-to-pipeline channel, batching, PostgreSQL writes, deduplication, and cursor persistence.
 - Idempotent writes through stable `event_id` values and `ON CONFLICT DO NOTHING`.
@@ -62,9 +62,9 @@ Current `event_id` values are derived from typed source identity, not payload co
 ## Limitations
 
 - Live Yellowstone mode is available only with `--features yellowstone-live`.
-- Live Yellowstone defaults to slots-only subscription; transaction/block/account filters need explicit future policy.
+- Live Yellowstone defaults to slots-only subscription; broader transaction/block/entry subscriptions are opt-in.
 - Live mode currently runs ingestion in the foreground and does not serve concurrent HTTP status endpoints.
-- Provider-specific reconnect, replay, start-slot, and gap recovery semantics are not implemented yet.
+- Provider-specific reconnect, replay, and gap recovery semantics are not implemented yet.
 - Cursor progress is currently based on the maximum slot in each successful batch; this is not a gap-free live recovery guarantee.
 - Replay currently loads the configured JSONL file before entering the bounded channel.
 - Exactly-once upstream delivery is not claimed.
@@ -89,6 +89,7 @@ Important variables:
 - `YELLOWSTONE_ENDPOINT`: required for `RUN_MODE=yellowstone`.
 - `YELLOWSTONE_X_TOKEN`: optional Yellowstone provider token sent as `x-token` metadata.
 - `YELLOWSTONE_CLUSTER`: cluster label used in event identity, default `mainnet-beta`.
+- `YELLOWSTONE_SUBSCRIPTIONS`: comma-separated live subscription set; allowed values are `slots`, `transactions`, `blocks`, and `entries`; default is `slots`.
 
 ## Local Run
 
@@ -122,13 +123,14 @@ Run feature-gated Yellowstone live mode:
 RUN_MODE=yellowstone \
 YELLOWSTONE_ENDPOINT=https://provider.example \
 YELLOWSTONE_CLUSTER=mainnet-beta \
+YELLOWSTONE_SUBSCRIPTIONS=slots,transactions \
 cargo run -p solana-yellowstone-stream-processor --features yellowstone-live
 ```
 
 Equivalent CLI mode selection:
 
 ```bash
-cargo run -p solana-yellowstone-stream-processor --features yellowstone-live -- --mode yellowstone --yellowstone-endpoint https://provider.example --yellowstone-cluster mainnet-beta
+cargo run -p solana-yellowstone-stream-processor --features yellowstone-live -- --mode yellowstone --yellowstone-endpoint https://provider.example --yellowstone-cluster mainnet-beta --yellowstone-subscriptions slots,transactions
 ```
 
 Replay HTTP endpoints:

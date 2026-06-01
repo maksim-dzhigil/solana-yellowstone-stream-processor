@@ -29,6 +29,9 @@ pub struct CliArgs {
     #[arg(long, value_name = "NAME")]
     pub yellowstone_cluster: Option<String>,
 
+    #[arg(long, value_name = "LIST")]
+    pub yellowstone_subscriptions: Option<String>,
+
     #[arg(long)]
     pub exit_after_replay: bool,
 }

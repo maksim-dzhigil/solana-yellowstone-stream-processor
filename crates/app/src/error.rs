@@ -18,6 +18,10 @@ pub enum ConfigError {
         key: &'static str,
         value: String,
     },
+    InvalidYellowstoneSubscription {
+        key: &'static str,
+        value: String,
+    },
     InvalidUsize {
         key: &'static str,
         value: String,
@@ -41,6 +45,10 @@ impl fmt::Display for ConfigError {
             Self::InvalidRunMode { key, value } => {
                 write!(f, "{key} must be replay or yellowstone, got {value:?}")
             }
+            Self::InvalidYellowstoneSubscription { key, value } => write!(
+                f,
+                "{key} must be a comma-separated list containing slots, transactions, blocks, or entries; got {value:?}"
+            ),
             Self::InvalidUsize { key, value } => {
                 write!(f, "{key} must be a positive integer, got {value:?}")
             }
