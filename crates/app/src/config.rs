@@ -83,6 +83,9 @@ pub struct Config {
     pub yellowstone_x_token: Option<String>,
     pub yellowstone_cluster: String,
     pub yellowstone_subscriptions: YellowstoneSubscriptions,
+    pub yellowstone_transaction_account_include: Vec<String>,
+    pub yellowstone_transaction_account_exclude: Vec<String>,
+    pub yellowstone_transaction_account_required: Vec<String>,
 }
 
 impl fmt::Debug for Config {
@@ -109,6 +112,18 @@ impl fmt::Debug for Config {
             .field(
                 "yellowstone_subscriptions",
                 &self.yellowstone_subscriptions.as_csv(),
+            )
+            .field(
+                "yellowstone_transaction_account_include_count",
+                &self.yellowstone_transaction_account_include.len(),
+            )
+            .field(
+                "yellowstone_transaction_account_exclude_count",
+                &self.yellowstone_transaction_account_exclude.len(),
+            )
+            .field(
+                "yellowstone_transaction_account_required_count",
+                &self.yellowstone_transaction_account_required.len(),
             )
             .finish()
     }
@@ -146,6 +161,18 @@ impl Config {
             yellowstone_x_token: env_optional_non_empty(source, "YELLOWSTONE_X_TOKEN")?,
             yellowstone_cluster: env_or_default(source, "YELLOWSTONE_CLUSTER", "mainnet-beta")?,
             yellowstone_subscriptions: env_yellowstone_subscriptions_or_default(source)?,
+            yellowstone_transaction_account_include: env_account_filter_list(
+                source,
+                "YELLOWSTONE_TRANSACTION_ACCOUNT_INCLUDE",
+            )?,
+            yellowstone_transaction_account_exclude: env_account_filter_list(
+                source,
+                "YELLOWSTONE_TRANSACTION_ACCOUNT_EXCLUDE",
+            )?,
+            yellowstone_transaction_account_required: env_account_filter_list(
+                source,
+                "YELLOWSTONE_TRANSACTION_ACCOUNT_REQUIRED",
+            )?,
         })
     }
 
@@ -180,6 +207,18 @@ impl Config {
             self.yellowstone_subscriptions =
                 parse_yellowstone_subscriptions("--yellowstone-subscriptions", value)?;
         }
+        if let Some(value) = args.yellowstone_transaction_account_include.as_deref() {
+            self.yellowstone_transaction_account_include =
+                parse_account_filter_list("--yellowstone-transaction-account-include", value)?;
+        }
+        if let Some(value) = args.yellowstone_transaction_account_exclude.as_deref() {
+            self.yellowstone_transaction_account_exclude =
+                parse_account_filter_list("--yellowstone-transaction-account-exclude", value)?;
+        }
+        if let Some(value) = args.yellowstone_transaction_account_required.as_deref() {
+            self.yellowstone_transaction_account_required =
+                parse_account_filter_list("--yellowstone-transaction-account-required", value)?;
+        }
         if args.exit_after_replay {
             self.exit_after_replay = true;
         }
@@ -189,7 +228,7 @@ impl Config {
 
     pub fn redacted_summary(&self) -> String {
         format!(
-            "run_mode={}; http_addr={}; replay_path={}; stream_name={}; exit_after_replay={}; batch_size={}; channel_capacity={}; database_url_configured={}; yellowstone_endpoint_configured={}; yellowstone_x_token_configured={}; yellowstone_cluster={}; yellowstone_subscriptions={}",
+            "run_mode={}; http_addr={}; replay_path={}; stream_name={}; exit_after_replay={}; batch_size={}; channel_capacity={}; database_url_configured={}; yellowstone_endpoint_configured={}; yellowstone_x_token_configured={}; yellowstone_cluster={}; yellowstone_subscriptions={}; yellowstone_transaction_account_include_count={}; yellowstone_transaction_account_exclude_count={}; yellowstone_transaction_account_required_count={}",
             self.run_mode,
             self.http_addr,
             self.replay_path,
@@ -202,6 +241,9 @@ impl Config {
             self.yellowstone_x_token.is_some(),
             self.yellowstone_cluster,
             self.yellowstone_subscriptions.as_csv(),
+            self.yellowstone_transaction_account_include.len(),
+            self.yellowstone_transaction_account_exclude.len(),
+            self.yellowstone_transaction_account_required.len(),
         )
     }
 
@@ -265,6 +307,35 @@ fn env_or_default(
         Some(value) => Ok(value),
         None => Ok(default.to_owned()),
     }
+}
+
+fn env_account_filter_list(
+    source: &impl ConfigSource,
+    key: &'static str,
+) -> Result<Vec<String>, ConfigError> {
+    match source.get(key)? {
+        Some(value) => parse_account_filter_list(key, &value),
+        None => Ok(Vec::new()),
+    }
+}
+
+fn parse_account_filter_list(key: &'static str, value: &str) -> Result<Vec<String>, ConfigError> {
+    if value.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut values = Vec::new();
+    for raw_item in value.split(',') {
+        let item = raw_item.trim();
+        if item.is_empty() {
+            return Err(ConfigError::Empty { key });
+        }
+        if !values.iter().any(|value| value == item) {
+            values.push(item.to_owned());
+        }
+    }
+
+    Ok(values)
 }
 
 fn env_yellowstone_subscriptions_or_default(
@@ -388,6 +459,9 @@ mod tests {
             config.yellowstone_subscriptions,
             YellowstoneSubscriptions::slots_only()
         );
+        assert!(config.yellowstone_transaction_account_include.is_empty());
+        assert!(config.yellowstone_transaction_account_exclude.is_empty());
+        assert!(config.yellowstone_transaction_account_required.is_empty());
     }
 
     #[test]
@@ -406,7 +480,13 @@ mod tests {
             .with(
                 "YELLOWSTONE_SUBSCRIPTIONS",
                 "slots,transactions,blocks,entries",
-            );
+            )
+            .with(
+                "YELLOWSTONE_TRANSACTION_ACCOUNT_INCLUDE",
+                "include-1, include-2, include-1",
+            )
+            .with("YELLOWSTONE_TRANSACTION_ACCOUNT_EXCLUDE", "exclude-1")
+            .with("YELLOWSTONE_TRANSACTION_ACCOUNT_REQUIRED", "required-1");
 
         let config = Config::from_source(&source)
             .expect("config should load")
@@ -434,6 +514,18 @@ mod tests {
                 blocks: true,
                 entries: true,
             }
+        );
+        assert_eq!(
+            config.yellowstone_transaction_account_include,
+            vec!["include-1".to_owned(), "include-2".to_owned()]
+        );
+        assert_eq!(
+            config.yellowstone_transaction_account_exclude,
+            vec!["exclude-1".to_owned()]
+        );
+        assert_eq!(
+            config.yellowstone_transaction_account_required,
+            vec!["required-1".to_owned()]
         );
     }
 
@@ -471,7 +563,11 @@ mod tests {
                 "YELLOWSTONE_ENDPOINT",
                 "https://provider.example/secret-path?api_key=endpoint-secret",
             )
-            .with("YELLOWSTONE_X_TOKEN", "yellowstone-secret-token");
+            .with("YELLOWSTONE_X_TOKEN", "yellowstone-secret-token")
+            .with(
+                "YELLOWSTONE_TRANSACTION_ACCOUNT_INCLUDE",
+                "sensitive-account-filter",
+            );
 
         Config::from_source(&source).expect("config should load")
     }
@@ -484,6 +580,7 @@ mod tests {
         assert!(!value.contains("provider.example"));
         assert!(!value.contains("endpoint-secret"));
         assert!(!value.contains("yellowstone-secret-token"));
+        assert!(!value.contains("sensitive-account-filter"));
     }
 
     #[test]
@@ -507,6 +604,11 @@ mod tests {
                 yellowstone_endpoint: Some("https://example.test".to_owned()),
                 yellowstone_cluster: Some("devnet".to_owned()),
                 yellowstone_subscriptions: Some("transactions,blocks".to_owned()),
+                yellowstone_transaction_account_include: Some(
+                    "include-cli-1,include-cli-2".to_owned(),
+                ),
+                yellowstone_transaction_account_exclude: Some("exclude-cli".to_owned()),
+                yellowstone_transaction_account_required: Some("required-cli".to_owned()),
                 exit_after_replay: true,
             })
             .expect("cli overrides should apply");
@@ -528,6 +630,18 @@ mod tests {
                 blocks: true,
                 entries: false,
             }
+        );
+        assert_eq!(
+            config.yellowstone_transaction_account_include,
+            vec!["include-cli-1".to_owned(), "include-cli-2".to_owned()]
+        );
+        assert_eq!(
+            config.yellowstone_transaction_account_exclude,
+            vec!["exclude-cli".to_owned()]
+        );
+        assert_eq!(
+            config.yellowstone_transaction_account_required,
+            vec!["required-cli".to_owned()]
         );
         assert!(config.exit_after_replay);
         assert_eq!(
@@ -596,6 +710,20 @@ mod tests {
             ConfigError::InvalidYellowstoneSubscription {
                 key: "YELLOWSTONE_SUBSCRIPTIONS",
                 value: "slots,accounts".to_owned()
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_empty_yellowstone_account_filter_items() {
+        let source = FakeEnv::default().with("YELLOWSTONE_TRANSACTION_ACCOUNT_INCLUDE", "one,,two");
+
+        let err = Config::from_source(&source).expect_err("empty filter item should fail");
+
+        assert_eq!(
+            err,
+            ConfigError::Empty {
+                key: "YELLOWSTONE_TRANSACTION_ACCOUNT_INCLUDE"
             }
         );
     }

@@ -32,6 +32,15 @@ pub struct CliArgs {
     #[arg(long, value_name = "LIST")]
     pub yellowstone_subscriptions: Option<String>,
 
+    #[arg(long, value_name = "LIST")]
+    pub yellowstone_transaction_account_include: Option<String>,
+
+    #[arg(long, value_name = "LIST")]
+    pub yellowstone_transaction_account_exclude: Option<String>,
+
+    #[arg(long, value_name = "LIST")]
+    pub yellowstone_transaction_account_required: Option<String>,
+
     #[arg(long)]
     pub exit_after_replay: bool,
 }

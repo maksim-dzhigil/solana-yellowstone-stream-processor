@@ -90,6 +90,9 @@ Important variables:
 - `YELLOWSTONE_X_TOKEN`: optional Yellowstone provider token sent as `x-token` metadata.
 - `YELLOWSTONE_CLUSTER`: cluster label used in event identity, default `mainnet-beta`.
 - `YELLOWSTONE_SUBSCRIPTIONS`: comma-separated live subscription set; allowed values are `slots`, `transactions`, `blocks`, and `entries`; default is `slots`.
+- `YELLOWSTONE_TRANSACTION_ACCOUNT_INCLUDE`: optional comma-separated transaction `account_include` filters.
+- `YELLOWSTONE_TRANSACTION_ACCOUNT_EXCLUDE`: optional comma-separated transaction `account_exclude` filters.
+- `YELLOWSTONE_TRANSACTION_ACCOUNT_REQUIRED`: optional comma-separated transaction `account_required` filters.
 
 ## Local Run
 
@@ -124,13 +127,14 @@ RUN_MODE=yellowstone \
 YELLOWSTONE_ENDPOINT=https://provider.example \
 YELLOWSTONE_CLUSTER=mainnet-beta \
 YELLOWSTONE_SUBSCRIPTIONS=slots,transactions \
+YELLOWSTONE_TRANSACTION_ACCOUNT_INCLUDE=TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA \
 cargo run -p solana-yellowstone-stream-processor --features yellowstone-live
 ```
 
 Equivalent CLI mode selection:
 
 ```bash
-cargo run -p solana-yellowstone-stream-processor --features yellowstone-live -- --mode yellowstone --yellowstone-endpoint https://provider.example --yellowstone-cluster mainnet-beta --yellowstone-subscriptions slots,transactions
+cargo run -p solana-yellowstone-stream-processor --features yellowstone-live -- --mode yellowstone --yellowstone-endpoint https://provider.example --yellowstone-cluster mainnet-beta --yellowstone-subscriptions slots,transactions --yellowstone-transaction-account-include TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA
 ```
 
 Replay HTTP endpoints:

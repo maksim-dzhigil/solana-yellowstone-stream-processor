@@ -102,6 +102,9 @@ async fn run_yellowstone(config: Config) -> Result<(), AppRunError> {
         yellowstone_x_token_configured = config.yellowstone_x_token.is_some(),
         yellowstone_cluster = %config.yellowstone_cluster,
         yellowstone_subscriptions = %config.yellowstone_subscriptions.as_csv(),
+        yellowstone_transaction_account_include_count = config.yellowstone_transaction_account_include.len(),
+        yellowstone_transaction_account_exclude_count = config.yellowstone_transaction_account_exclude.len(),
+        yellowstone_transaction_account_required_count = config.yellowstone_transaction_account_required.len(),
         "yellowstone live mode selected"
     );
 
@@ -137,6 +140,12 @@ async fn run_yellowstone(config: Config) -> Result<(), AppRunError> {
     yellowstone_config.subscribe_transactions = config.yellowstone_subscriptions.transactions;
     yellowstone_config.subscribe_blocks = config.yellowstone_subscriptions.blocks;
     yellowstone_config.subscribe_entries = config.yellowstone_subscriptions.entries;
+    yellowstone_config.transaction_account_include =
+        config.yellowstone_transaction_account_include.clone();
+    yellowstone_config.transaction_account_exclude =
+        config.yellowstone_transaction_account_exclude.clone();
+    yellowstone_config.transaction_account_required =
+        config.yellowstone_transaction_account_required.clone();
 
     let pipeline_config = PipelineConfig {
         batch_size: config.batch_size,
@@ -182,6 +191,9 @@ async fn run_yellowstone(config: Config) -> Result<(), AppRunError> {
         yellowstone_x_token_configured = config.yellowstone_x_token.is_some(),
         yellowstone_cluster = %config.yellowstone_cluster,
         yellowstone_subscriptions = %config.yellowstone_subscriptions.as_csv(),
+        yellowstone_transaction_account_include_count = config.yellowstone_transaction_account_include.len(),
+        yellowstone_transaction_account_exclude_count = config.yellowstone_transaction_account_exclude.len(),
+        yellowstone_transaction_account_required_count = config.yellowstone_transaction_account_required.len(),
         "yellowstone live mode selected"
     );
 

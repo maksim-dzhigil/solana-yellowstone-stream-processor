@@ -25,6 +25,9 @@ pub struct YellowstoneGrpcConfig {
     pub subscribe_transactions: bool,
     pub subscribe_blocks: bool,
     pub subscribe_entries: bool,
+    pub transaction_account_include: Vec<String>,
+    pub transaction_account_exclude: Vec<String>,
+    pub transaction_account_required: Vec<String>,
 }
 
 impl fmt::Debug for YellowstoneGrpcConfig {
@@ -40,6 +43,18 @@ impl fmt::Debug for YellowstoneGrpcConfig {
             .field("subscribe_transactions", &self.subscribe_transactions)
             .field("subscribe_blocks", &self.subscribe_blocks)
             .field("subscribe_entries", &self.subscribe_entries)
+            .field(
+                "transaction_account_include_count",
+                &self.transaction_account_include.len(),
+            )
+            .field(
+                "transaction_account_exclude_count",
+                &self.transaction_account_exclude.len(),
+            )
+            .field(
+                "transaction_account_required_count",
+                &self.transaction_account_required.len(),
+            )
             .finish()
     }
 }
@@ -57,6 +72,9 @@ impl YellowstoneGrpcConfig {
             subscribe_transactions: false,
             subscribe_blocks: false,
             subscribe_entries: false,
+            transaction_account_include: Vec::new(),
+            transaction_account_exclude: Vec::new(),
+            transaction_account_required: Vec::new(),
         }
     }
 
@@ -82,9 +100,9 @@ impl YellowstoneGrpcConfig {
                     vote: Some(false),
                     failed: None,
                     signature: None,
-                    account_include: Vec::new(),
-                    account_exclude: Vec::new(),
-                    account_required: Vec::new(),
+                    account_include: self.transaction_account_include.clone(),
+                    account_exclude: self.transaction_account_exclude.clone(),
+                    account_required: self.transaction_account_required.clone(),
                 },
             );
         }
@@ -286,11 +304,29 @@ mod tests {
         config.subscribe_transactions = true;
         config.subscribe_blocks = true;
         config.subscribe_entries = true;
+        config.transaction_account_include = vec!["include-1".to_owned(), "include-2".to_owned()];
+        config.transaction_account_exclude = vec!["exclude-1".to_owned()];
+        config.transaction_account_required = vec!["required-1".to_owned()];
 
         let request = config.subscribe_request().expect("request should build");
 
         assert!(request.slots.contains_key("live"));
-        assert!(request.transactions.contains_key("live"));
+        let transaction_filter = request
+            .transactions
+            .get("live")
+            .expect("transaction filter exists");
+        assert_eq!(
+            transaction_filter.account_include,
+            vec!["include-1".to_owned(), "include-2".to_owned()]
+        );
+        assert_eq!(
+            transaction_filter.account_exclude,
+            vec!["exclude-1".to_owned()]
+        );
+        assert_eq!(
+            transaction_filter.account_required,
+            vec!["required-1".to_owned()]
+        );
         assert!(request.blocks.contains_key("live"));
         assert!(request.entry.contains_key("live"));
         assert_eq!(request.commitment, Some(CommitmentLevel::Finalized as i32));
@@ -304,6 +340,7 @@ mod tests {
             "mainnet-beta",
         );
         config.x_token = Some("yellowstone-secret-token".to_owned());
+        config.transaction_account_include = vec!["sensitive-account-filter".to_owned()];
 
         let debug = format!("{config:?}");
 
@@ -313,6 +350,7 @@ mod tests {
         assert!(!debug.contains("secret-path"));
         assert!(!debug.contains("endpoint-secret"));
         assert!(!debug.contains("yellowstone-secret-token"));
+        assert!(!debug.contains("sensitive-account-filter"));
     }
 
     #[test]
