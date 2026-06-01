@@ -4,6 +4,7 @@ use crate::yellowstone::proto::{
 use solana_yellowstone_domain::event::NormalizedEvent;
 use std::collections::HashMap;
 use std::fmt;
+use std::future::Future;
 use std::time::Duration;
 use tokio::{sync::mpsc, time::sleep};
 use yellowstone_grpc_proto::geyser::{
@@ -82,6 +83,7 @@ pub struct YellowstoneReconnectEvent {
     pub delay: Duration,
     pub error_kind: YellowstoneGrpcErrorKind,
     pub error_message: String,
+    pub from_slot: Option<u64>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -267,17 +269,66 @@ pub async fn run_yellowstone_grpc_producer_with_reconnect_status<O>(
     config: YellowstoneGrpcConfig,
     reconnect: YellowstoneReconnectConfig,
     sender: mpsc::Sender<NormalizedEvent>,
-    mut on_reconnect: O,
+    on_reconnect: O,
 ) -> Result<(), YellowstoneGrpcError>
 where
     O: FnMut(YellowstoneReconnectEvent) + Send,
+{
+    run_yellowstone_grpc_producer_with_reconnect_status_and_config(
+        config,
+        reconnect,
+        sender,
+        on_reconnect,
+        |_| {},
+    )
+    .await
+}
+
+pub async fn run_yellowstone_grpc_producer_with_reconnect_status_and_config<O, C>(
+    config: YellowstoneGrpcConfig,
+    reconnect: YellowstoneReconnectConfig,
+    sender: mpsc::Sender<NormalizedEvent>,
+    on_reconnect: O,
+    configure_attempt: C,
+) -> Result<(), YellowstoneGrpcError>
+where
+    O: FnMut(YellowstoneReconnectEvent) + Send,
+    C: FnMut(&mut YellowstoneGrpcConfig) + Send,
+{
+    run_yellowstone_reconnect_loop(
+        config,
+        reconnect,
+        move |attempt_config| {
+            let sender = sender.clone();
+            async move { run_yellowstone_grpc_producer(attempt_config, sender).await }
+        },
+        on_reconnect,
+        configure_attempt,
+    )
+    .await
+}
+
+async fn run_yellowstone_reconnect_loop<A, F, O, C>(
+    mut config: YellowstoneGrpcConfig,
+    reconnect: YellowstoneReconnectConfig,
+    mut attempt: A,
+    mut on_reconnect: O,
+    mut configure_attempt: C,
+) -> Result<(), YellowstoneGrpcError>
+where
+    A: FnMut(YellowstoneGrpcConfig) -> F,
+    F: Future<Output = Result<(), YellowstoneGrpcError>>,
+    O: FnMut(YellowstoneReconnectEvent),
+    C: FnMut(&mut YellowstoneGrpcConfig),
 {
     let reconnect = reconnect.normalized();
     let mut retry_attempt = 0_u32;
     let mut delay = reconnect.initial_delay;
 
     loop {
-        match run_yellowstone_grpc_producer(config.clone(), sender.clone()).await {
+        configure_attempt(&mut config);
+        let attempt_from_slot = config.from_slot;
+        match attempt(config.clone()).await {
             Ok(()) => return Ok(()),
             Err(err) if !err.is_retryable() => return Err(err),
             Err(err) => {
@@ -294,12 +345,14 @@ where
                     delay,
                     error_kind: err.kind(),
                     error_message: err.to_string(),
+                    from_slot: attempt_from_slot,
                 };
                 on_reconnect(event.clone());
 
                 tracing::warn!(
                     retry_attempt,
                     delay_ms = delay.as_millis(),
+                    from_slot = ?event.from_slot,
                     error_kind = event.error_kind.as_str(),
                     error = %event.error_message,
                     "yellowstone producer failed; reconnecting after backoff"
@@ -434,7 +487,12 @@ impl std::error::Error for YellowstoneGrpcError {
 
 #[cfg(test)]
 mod tests {
-    use super::{YellowstoneCommitment, YellowstoneGrpcConfig, YellowstoneGrpcError};
+    use super::{
+        YellowstoneCommitment, YellowstoneGrpcConfig, YellowstoneGrpcError,
+        YellowstoneReconnectConfig,
+    };
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
     use yellowstone_grpc_proto::geyser::CommitmentLevel;
 
     #[test]
@@ -527,6 +585,75 @@ mod tests {
                 std::time::Duration::from_secs(30),
             ),
             std::time::Duration::from_secs(30)
+        );
+    }
+
+    #[tokio::test]
+    async fn reconnect_loop_refreshes_from_slot_between_attempts() {
+        let latest_persisted_slot = Arc::new(Mutex::new(Some(10_u64)));
+        let attempts = Arc::new(Mutex::new(Vec::new()));
+        let reconnect_events = Arc::new(Mutex::new(Vec::new()));
+        let attempt_count = Arc::new(Mutex::new(0_u32));
+
+        let latest_for_config = latest_persisted_slot.clone();
+        let attempts_for_callback = attempts.clone();
+        let attempt_count_for_callback = attempt_count.clone();
+        let reconnect_events_for_callback = reconnect_events.clone();
+        let latest_for_reconnect = latest_persisted_slot.clone();
+
+        super::run_yellowstone_reconnect_loop(
+            YellowstoneGrpcConfig::slots_only("https://provider.example", "mainnet-beta"),
+            YellowstoneReconnectConfig {
+                initial_delay: Duration::from_millis(1),
+                max_delay: Duration::from_millis(1),
+                max_retries: Some(3),
+            },
+            move |config| {
+                let attempts = attempts_for_callback.clone();
+                let attempt_count = attempt_count_for_callback.clone();
+                async move {
+                    attempts
+                        .lock()
+                        .expect("attempts lock")
+                        .push(config.from_slot);
+                    let mut attempt_count = attempt_count.lock().expect("attempt count lock");
+                    *attempt_count += 1;
+                    if *attempt_count < 3 {
+                        Err(YellowstoneGrpcError::Receive(
+                            yellowstone_grpc_proto::tonic::Status::unavailable(
+                                "provider unavailable",
+                            ),
+                        ))
+                    } else {
+                        Ok(())
+                    }
+                }
+            },
+            move |event| {
+                reconnect_events_for_callback
+                    .lock()
+                    .expect("reconnect events lock")
+                    .push((event.retry_attempt, event.from_slot));
+                *latest_for_reconnect
+                    .lock()
+                    .expect("latest persisted slot lock") = Some(20);
+            },
+            move |config| {
+                config.from_slot = *latest_for_config
+                    .lock()
+                    .expect("latest persisted slot lock");
+            },
+        )
+        .await
+        .expect("reconnect loop should eventually succeed");
+
+        assert_eq!(
+            *attempts.lock().expect("attempts lock"),
+            vec![Some(10), Some(20), Some(20)]
+        );
+        assert_eq!(
+            *reconnect_events.lock().expect("reconnect events lock"),
+            vec![(1, Some(10)), (2, Some(20))]
         );
     }
 

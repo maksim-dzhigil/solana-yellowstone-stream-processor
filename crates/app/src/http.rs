@@ -31,11 +31,23 @@ pub enum LiveProducerState {
 }
 
 #[cfg(feature = "yellowstone-live")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LiveRecoveryState {
+    Steady,
+    Reconnecting,
+    GapRisk,
+}
+
+#[cfg(feature = "yellowstone-live")]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct LiveProducerStatus {
     pub producer_state: LiveProducerState,
+    pub recovery_state: LiveRecoveryState,
     pub reconnect_attempts: u64,
     pub last_reconnect_delay_ms: Option<u64>,
+    pub last_reconnect_from_slot: Option<u64>,
+    pub gap_risk_count: u64,
     pub last_error_kind: Option<String>,
     pub last_error: Option<String>,
     pub last_event_at_unix_ms: Option<u64>,
@@ -52,8 +64,11 @@ impl Default for LiveProducerStatus {
     fn default() -> Self {
         Self {
             producer_state: LiveProducerState::Running,
+            recovery_state: LiveRecoveryState::Steady,
             reconnect_attempts: 0,
             last_reconnect_delay_ms: None,
+            last_reconnect_from_slot: None,
+            gap_risk_count: 0,
             last_error_kind: None,
             last_error: None,
             last_event_at_unix_ms: None,
@@ -71,6 +86,9 @@ impl Default for LiveProducerStatus {
 impl LiveProducerStatus {
     pub fn running(mut self) -> Self {
         self.producer_state = LiveProducerState::Running;
+        if self.recovery_state == LiveRecoveryState::Reconnecting {
+            self.recovery_state = LiveRecoveryState::Steady;
+        }
         self
     }
 
@@ -86,6 +104,17 @@ impl LiveProducerStatus {
         self.last_reconnect_delay_ms = Some(last_reconnect_delay_ms);
         self.last_error_kind = Some(last_error_kind.into());
         self.last_error = Some(last_error.into());
+        self
+    }
+
+    pub fn with_recovery_reconnect(mut self, from_slot: Option<u64>) -> Self {
+        self.last_reconnect_from_slot = from_slot;
+        if from_slot.is_some() {
+            self.recovery_state = LiveRecoveryState::Reconnecting;
+        } else {
+            self.recovery_state = LiveRecoveryState::GapRisk;
+            self.gap_risk_count = self.gap_risk_count.saturating_add(1);
+        }
         self
     }
 
@@ -366,6 +395,19 @@ fn render_metrics(status: &StatusSnapshot) -> String {
             "",
             u64::from(live.producer_state == LiveProducerState::Running),
         );
+        push_gauge(
+            &mut output,
+            "solana_stream_recovery_gap_risk",
+            "Whether the live recovery state currently has local gap risk.",
+            "",
+            u64::from(live.recovery_state == LiveRecoveryState::GapRisk),
+        );
+        push_counter(
+            &mut output,
+            "solana_stream_recovery_gap_risk_total",
+            "Total live reconnect attempts made without a local from_slot.",
+            live.gap_risk_count as usize,
+        );
         if let Some(delay_ms) = live.last_reconnect_delay_ms {
             push_gauge(
                 &mut output,
@@ -373,6 +415,15 @@ fn render_metrics(status: &StatusSnapshot) -> String {
                 "Last Yellowstone reconnect backoff delay in milliseconds.",
                 "",
                 delay_ms,
+            );
+        }
+        if let Some(slot) = live.last_reconnect_from_slot {
+            push_gauge(
+                &mut output,
+                "solana_stream_last_reconnect_from_slot",
+                "Last local cursor slot used for a Yellowstone reconnect attempt.",
+                "",
+                slot,
             );
         }
         if let Some(seconds) = live.seconds_since_last_event {
@@ -617,6 +668,7 @@ mod tests {
                 "receive",
                 "yellowstone stream receive failed with gRPC status Unavailable",
             )
+            .with_recovery_reconnect(Some(40))
             .with_event_observed(42, 10_000)
             .with_batch_persisted_at(9_000)
             .refresh_staleness_at(12_500)
@@ -632,7 +684,10 @@ mod tests {
         );
         assert!(metrics.contains("solana_stream_reconnect_attempts_total 3"));
         assert!(metrics.contains("solana_stream_producer_up 0"));
+        assert!(metrics.contains("solana_stream_recovery_gap_risk 0"));
+        assert!(metrics.contains("solana_stream_recovery_gap_risk_total 0"));
         assert!(metrics.contains("solana_stream_reconnect_delay_ms 1000"));
+        assert!(metrics.contains("solana_stream_last_reconnect_from_slot 40"));
         assert!(metrics.contains("solana_stream_seconds_since_last_event 2"));
         assert!(metrics.contains("solana_stream_seconds_since_last_persisted_batch 3"));
         assert!(metrics.contains("solana_stream_last_observed_slot 42"));
@@ -682,6 +737,20 @@ mod tests {
     }
 
     #[cfg(feature = "yellowstone-live")]
+    #[test]
+    fn live_recovery_marks_gap_risk_without_from_slot() {
+        let live = super::LiveProducerStatus::default()
+            .with_reconnecting(1, 1_000, "connect", "failed to connect")
+            .with_recovery_reconnect(None)
+            .running();
+
+        assert_eq!(live.producer_state, super::LiveProducerState::Running);
+        assert_eq!(live.recovery_state, super::LiveRecoveryState::GapRisk);
+        assert_eq!(live.gap_risk_count, 1);
+        assert_eq!(live.last_reconnect_from_slot, None);
+    }
+
+    #[cfg(feature = "yellowstone-live")]
     #[tokio::test]
     async fn status_endpoint_returns_live_producer_status() {
         let summary = PipelineSummary {
@@ -704,6 +773,7 @@ mod tests {
                     "subscribe",
                     "yellowstone subscribe failed with gRPC status Unavailable",
                 )
+                .with_recovery_reconnect(Some(10))
                 .with_event_observed(12, super::current_unix_ms().saturating_sub(2_000))
                 .with_batch_persisted_at(super::current_unix_ms().saturating_sub(3_000)),
         );
@@ -725,8 +795,11 @@ mod tests {
 
         assert_eq!(body["mode"], "yellowstone");
         assert_eq!(body["live"]["producer_state"], "reconnecting");
+        assert_eq!(body["live"]["recovery_state"], "reconnecting");
         assert_eq!(body["live"]["reconnect_attempts"], 2);
         assert_eq!(body["live"]["last_reconnect_delay_ms"], 2_000);
+        assert_eq!(body["live"]["last_reconnect_from_slot"], 10);
+        assert_eq!(body["live"]["gap_risk_count"], 0);
         assert_eq!(body["live"]["last_error_kind"], "subscribe");
         assert_eq!(
             body["live"]["last_error"],

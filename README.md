@@ -40,7 +40,7 @@ flowchart LR
 - HTTP `/healthz`, `/readyz`, `/status`, and `/metrics` after replay completion and concurrently during live Yellowstone ingestion.
 - Coordinated live shutdown for HTTP and Yellowstone ingest tasks on shutdown signal.
 - Yellowstone reconnect with bounded exponential backoff for transient connect/subscribe/receive failures.
-- Live `/status` and `/metrics` expose producer state, reconnect attempts, last reconnect delay, last safe error summary, last observed event time, last observed slot, last persisted batch time, seconds-since staleness gauges, and observed-to-persisted slot lag.
+- Live `/status` and `/metrics` expose producer state, recovery state, reconnect attempts, last reconnect delay/from-slot, last safe error summary, last observed event time, last observed slot, last persisted batch time, seconds-since staleness gauges, observed-to-persisted slot lag, and local gap-risk telemetry.
 - Structured logs with redacted config/debug/error output for database URLs, Yellowstone endpoints, and tokens.
 - Unit, binary, HTTP contract, integration, and PostgreSQL-backed tests.
 
@@ -68,7 +68,7 @@ Current `event_id` values are derived from typed source identity, not payload co
 - Live Yellowstone mode is available only with `--features yellowstone-live`.
 - Live Yellowstone defaults to slots-only subscription; broader transaction/block/entry subscriptions are opt-in.
 - Live reconnect uses configurable bounded backoff and defaults to unlimited retries.
-- Provider-specific replay and gap recovery semantics are not implemented yet.
+- Provider-specific replay behavior is not validated yet; see [docs/live-recovery.md](docs/live-recovery.md).
 - Cursor progress is currently based on the maximum slot in each successful batch; this is not a gap-free live recovery guarantee.
 - Replay currently loads the configured JSONL file before entering the bounded channel.
 - Exactly-once upstream delivery is not claimed.
@@ -180,4 +180,5 @@ cargo clippy -p solana-yellowstone-stream-processor --features yellowstone-live 
 
 ## Documentation
 
+- [docs/live-recovery.md](docs/live-recovery.md) - current live reconnect and recovery policy.
 - [LOGBOOK.md](LOGBOOK.md) - high-level project progress log.

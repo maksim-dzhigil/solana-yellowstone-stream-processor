@@ -16,10 +16,16 @@ use solana_yellowstone_stream::source::EventSource;
 #[cfg(feature = "yellowstone-live")]
 use solana_yellowstone_stream::yellowstone_live::{
     YellowstoneGrpcConfig, YellowstoneReconnectConfig,
-    run_yellowstone_grpc_producer_with_reconnect_status,
+    run_yellowstone_grpc_producer_with_reconnect_status_and_config,
 };
 #[cfg(feature = "yellowstone-live")]
-use std::time::{Duration, Instant};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::{Duration, Instant},
+};
 #[cfg(feature = "yellowstone-live")]
 use tokio::sync::watch;
 use tracing::info;
@@ -165,6 +171,8 @@ async fn run_yellowstone(config: Config) -> Result<(), AppRunError> {
     yellowstone_config.transaction_account_required =
         config.yellowstone_transaction_account_required.clone();
 
+    let latest_persisted_slot = Arc::new(AtomicU64::new(encode_slot(resume_after_slot)));
+
     let pipeline_config = PipelineConfig {
         batch_size: config.batch_size,
         channel_capacity: config.channel_capacity,
@@ -199,26 +207,37 @@ async fn run_yellowstone(config: Config) -> Result<(), AppRunError> {
     let reconnect_status_sender = status_sender.clone();
     let pipeline_status_sender = status_sender.clone();
     let activity_status_sender = status_sender.clone();
+    let producer_latest_persisted_slot = latest_persisted_slot.clone();
+    let progress_latest_persisted_slot = latest_persisted_slot.clone();
     let mut last_batches_written = 0;
     let mut last_activity_status_sent = None::<Instant>;
     let pipeline = run_event_producer_pipeline_with_progress_and_activity(
         move |sender| {
-            run_yellowstone_grpc_producer_with_reconnect_status(
+            run_yellowstone_grpc_producer_with_reconnect_status_and_config(
                 yellowstone_config,
                 yellowstone_reconnect_config,
                 sender,
                 move |event| {
                     let mut status = reconnect_status_sender.borrow().clone();
-                    let live = status.live.clone().unwrap_or_default().with_reconnecting(
-                        u64::from(event.retry_attempt),
-                        event.delay.as_millis() as u64,
-                        event.error_kind.as_str(),
-                        event.error_message,
-                    );
+                    let live = status
+                        .live
+                        .clone()
+                        .unwrap_or_default()
+                        .with_reconnecting(
+                            u64::from(event.retry_attempt),
+                            event.delay.as_millis() as u64,
+                            event.error_kind.as_str(),
+                            event.error_message,
+                        )
+                        .with_recovery_reconnect(event.from_slot);
                     status.live = Some(live);
                     if reconnect_status_sender.send(status).is_err() {
                         tracing::debug!("yellowstone status receiver dropped");
                     }
+                },
+                move |attempt_config| {
+                    attempt_config.from_slot =
+                        decode_slot(producer_latest_persisted_slot.load(Ordering::Relaxed));
                 },
             )
         },
@@ -235,6 +254,10 @@ async fn run_yellowstone(config: Config) -> Result<(), AppRunError> {
                 .running();
             if summary.batches_written > last_batches_written {
                 live = live.with_batch_persisted_at(http::current_unix_ms());
+                if let Some(slot) = summary.last_persisted_slot {
+                    progress_latest_persisted_slot
+                        .store(encode_slot(Some(slot)), Ordering::Relaxed);
+                }
                 last_batches_written = summary.batches_written;
             }
             let status = StatusSnapshot::from_pipeline_mode(
@@ -304,6 +327,16 @@ async fn run_yellowstone(config: Config) -> Result<(), AppRunError> {
             Ok(())
         }
     }
+}
+
+#[cfg(feature = "yellowstone-live")]
+fn encode_slot(slot: Option<u64>) -> u64 {
+    slot.map_or(0, |slot| slot.saturating_add(1))
+}
+
+#[cfg(feature = "yellowstone-live")]
+fn decode_slot(encoded: u64) -> Option<u64> {
+    (encoded > 0).then_some(encoded - 1)
 }
 
 #[cfg(feature = "yellowstone-live")]
