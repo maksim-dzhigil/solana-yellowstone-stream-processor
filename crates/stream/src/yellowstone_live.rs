@@ -4,7 +4,8 @@ use crate::yellowstone::proto::{
 use solana_yellowstone_domain::event::NormalizedEvent;
 use std::collections::HashMap;
 use std::fmt;
-use tokio::sync::mpsc;
+use std::time::Duration;
+use tokio::{sync::mpsc, time::sleep};
 use yellowstone_grpc_proto::geyser::{
     CommitmentLevel, SubscribeRequest, SubscribeRequestFilterBlocks, SubscribeRequestFilterEntry,
     SubscribeRequestFilterSlots, SubscribeRequestFilterTransactions, geyser_client::GeyserClient,
@@ -12,6 +13,43 @@ use yellowstone_grpc_proto::geyser::{
 use yellowstone_grpc_proto::tonic;
 
 const DEFAULT_FILTER_NAME: &str = "default";
+
+const DEFAULT_RECONNECT_INITIAL_DELAY: Duration = Duration::from_secs(1);
+const DEFAULT_RECONNECT_MAX_DELAY: Duration = Duration::from_secs(30);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct YellowstoneReconnectConfig {
+    pub initial_delay: Duration,
+    pub max_delay: Duration,
+    pub max_retries: Option<u32>,
+}
+
+impl Default for YellowstoneReconnectConfig {
+    fn default() -> Self {
+        Self {
+            initial_delay: DEFAULT_RECONNECT_INITIAL_DELAY,
+            max_delay: DEFAULT_RECONNECT_MAX_DELAY,
+            max_retries: None,
+        }
+    }
+}
+
+impl YellowstoneReconnectConfig {
+    fn normalized(self) -> Self {
+        let initial_delay = if self.initial_delay.is_zero() {
+            DEFAULT_RECONNECT_INITIAL_DELAY
+        } else {
+            self.initial_delay
+        };
+        let max_delay = self.max_delay.max(initial_delay);
+
+        Self {
+            initial_delay,
+            max_delay,
+            max_retries: self.max_retries,
+        }
+    }
+}
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct YellowstoneGrpcConfig {
@@ -184,6 +222,45 @@ impl YellowstoneCommitment {
     }
 }
 
+pub async fn run_yellowstone_grpc_producer_with_reconnect(
+    config: YellowstoneGrpcConfig,
+    reconnect: YellowstoneReconnectConfig,
+    sender: mpsc::Sender<NormalizedEvent>,
+) -> Result<(), YellowstoneGrpcError> {
+    let reconnect = reconnect.normalized();
+    let mut retry_attempt = 0_u32;
+    let mut delay = reconnect.initial_delay;
+
+    loop {
+        match run_yellowstone_grpc_producer(config.clone(), sender.clone()).await {
+            Ok(()) => return Ok(()),
+            Err(err) if !err.is_retryable() => return Err(err),
+            Err(err) => {
+                retry_attempt = retry_attempt.saturating_add(1);
+                if reconnect
+                    .max_retries
+                    .is_some_and(|max_retries| retry_attempt > max_retries)
+                {
+                    return Err(err);
+                }
+
+                tracing::warn!(
+                    retry_attempt,
+                    delay_ms = delay.as_millis(),
+                    error = %err,
+                    "yellowstone producer failed; reconnecting after backoff"
+                );
+                sleep(delay).await;
+                delay = next_backoff_delay(delay, reconnect.max_delay);
+            }
+        }
+    }
+}
+
+fn next_backoff_delay(current: Duration, max_delay: Duration) -> Duration {
+    current.saturating_mul(2).min(max_delay)
+}
+
 pub async fn run_yellowstone_grpc_producer(
     config: YellowstoneGrpcConfig,
     sender: mpsc::Sender<NormalizedEvent>,
@@ -255,6 +332,24 @@ impl fmt::Display for YellowstoneGrpcError {
             ),
             Self::Normalize(err) => write!(f, "yellowstone update normalization failed: {err}"),
             Self::ReceiverClosed => f.write_str("yellowstone event receiver closed"),
+        }
+    }
+}
+
+impl YellowstoneGrpcError {
+    fn is_retryable(&self) -> bool {
+        match self {
+            Self::Connect(_) => true,
+            Self::Subscribe(status) | Self::Receive(status) => !matches!(
+                status.code(),
+                tonic::Code::InvalidArgument
+                    | tonic::Code::Unauthenticated
+                    | tonic::Code::PermissionDenied
+            ),
+            Self::InvalidConfig { .. }
+            | Self::InvalidMetadataValue(_)
+            | Self::Normalize(_)
+            | Self::ReceiverClosed => false,
         }
     }
 }
@@ -351,6 +446,53 @@ mod tests {
         assert!(!debug.contains("endpoint-secret"));
         assert!(!debug.contains("yellowstone-secret-token"));
         assert!(!debug.contains("sensitive-account-filter"));
+    }
+
+    #[test]
+    fn default_reconnect_config_uses_bounded_unlimited_backoff() {
+        let config = super::YellowstoneReconnectConfig::default();
+
+        assert_eq!(config.initial_delay, std::time::Duration::from_secs(1));
+        assert_eq!(config.max_delay, std::time::Duration::from_secs(30));
+        assert_eq!(config.max_retries, None);
+        assert_eq!(
+            super::next_backoff_delay(
+                std::time::Duration::from_secs(20),
+                std::time::Duration::from_secs(30),
+            ),
+            std::time::Duration::from_secs(30)
+        );
+    }
+
+    #[test]
+    fn retry_classification_treats_auth_and_contract_errors_as_fatal() {
+        let unauthenticated = YellowstoneGrpcError::Subscribe(
+            yellowstone_grpc_proto::tonic::Status::unauthenticated("bad token"),
+        );
+        let unavailable = YellowstoneGrpcError::Receive(
+            yellowstone_grpc_proto::tonic::Status::unavailable("provider unavailable"),
+        );
+        let invalid_config = YellowstoneGrpcError::InvalidConfig {
+            message: "bad config".to_owned(),
+        };
+
+        assert!(!unauthenticated.is_retryable());
+        assert!(unavailable.is_retryable());
+        assert!(!invalid_config.is_retryable());
+    }
+
+    #[test]
+    fn reconnect_config_normalizes_zero_delays() {
+        let config = super::YellowstoneReconnectConfig {
+            initial_delay: std::time::Duration::ZERO,
+            max_delay: std::time::Duration::ZERO,
+            max_retries: Some(3),
+        }
+        .normalized();
+
+        assert_eq!(config.initial_delay, std::time::Duration::from_secs(1));
+        assert_eq!(config.max_delay, std::time::Duration::from_secs(1));
+        assert_eq!(config.max_retries, Some(3));
     }
 
     #[test]

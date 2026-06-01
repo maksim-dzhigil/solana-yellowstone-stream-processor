@@ -2075,6 +2075,7 @@ dependencies = [
  "solana-yellowstone-storage",
  "tokio",
  "tokio-stream",
+ "tracing",
  "yellowstone-grpc-proto",
 ]
 

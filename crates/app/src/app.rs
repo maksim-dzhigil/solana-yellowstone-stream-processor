@@ -15,7 +15,7 @@ use solana_yellowstone_stream::replay::ReplaySource;
 use solana_yellowstone_stream::source::EventSource;
 #[cfg(feature = "yellowstone-live")]
 use solana_yellowstone_stream::yellowstone_live::{
-    YellowstoneGrpcConfig, run_yellowstone_grpc_producer,
+    YellowstoneGrpcConfig, YellowstoneReconnectConfig, run_yellowstone_grpc_producer_with_reconnect,
 };
 #[cfg(feature = "yellowstone-live")]
 use tokio::sync::watch;
@@ -184,7 +184,13 @@ async fn run_yellowstone(config: Config) -> Result<(), AppRunError> {
     let http_server =
         http::serve_updates_until_shutdown(&config.http_addr, status_receiver, http_shutdown);
     let pipeline = run_event_producer_pipeline_with_progress(
-        move |sender| run_yellowstone_grpc_producer(yellowstone_config, sender),
+        move |sender| {
+            run_yellowstone_grpc_producer_with_reconnect(
+                yellowstone_config,
+                YellowstoneReconnectConfig::default(),
+                sender,
+            )
+        },
         &writer,
         &cursor_store,
         &config.stream_name,
