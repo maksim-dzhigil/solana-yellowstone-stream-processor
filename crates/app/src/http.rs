@@ -39,9 +39,12 @@ pub struct LiveProducerStatus {
     pub last_error_kind: Option<String>,
     pub last_error: Option<String>,
     pub last_event_at_unix_ms: Option<u64>,
+    pub last_observed_at_unix_ms: Option<u64>,
+    pub last_observed_slot: Option<u64>,
     pub last_persisted_batch_at_unix_ms: Option<u64>,
     pub seconds_since_last_event: Option<u64>,
     pub seconds_since_last_persisted_batch: Option<u64>,
+    pub observed_to_persisted_slot_lag: Option<u64>,
 }
 
 #[cfg(feature = "yellowstone-live")]
@@ -54,9 +57,12 @@ impl Default for LiveProducerStatus {
             last_error_kind: None,
             last_error: None,
             last_event_at_unix_ms: None,
+            last_observed_at_unix_ms: None,
+            last_observed_slot: None,
             last_persisted_batch_at_unix_ms: None,
             seconds_since_last_event: None,
             seconds_since_last_persisted_batch: None,
+            observed_to_persisted_slot_lag: None,
         }
     }
 }
@@ -85,7 +91,14 @@ impl LiveProducerStatus {
 
     pub fn with_event_observed_at(mut self, now_unix_ms: u64) -> Self {
         self.last_event_at_unix_ms = Some(now_unix_ms);
+        self.last_observed_at_unix_ms = Some(now_unix_ms);
         self.seconds_since_last_event = Some(0);
+        self
+    }
+
+    pub fn with_event_observed(mut self, slot: u64, now_unix_ms: u64) -> Self {
+        self = self.with_event_observed_at(now_unix_ms);
+        self.last_observed_slot = Some(slot);
         self
     }
 
@@ -102,6 +115,13 @@ impl LiveProducerStatus {
         self.seconds_since_last_persisted_batch = self
             .last_persisted_batch_at_unix_ms
             .map(|batch_at| seconds_between(batch_at, now_unix_ms));
+        self
+    }
+
+    pub fn refresh_slot_lag(mut self, last_persisted_slot: Option<u64>) -> Self {
+        self.observed_to_persisted_slot_lag = self.last_observed_slot.and_then(|observed_slot| {
+            last_persisted_slot.map(|persisted_slot| observed_slot.saturating_sub(persisted_slot))
+        });
         self
     }
 }
@@ -156,10 +176,13 @@ impl StatusSnapshot {
     }
 
     #[cfg(feature = "yellowstone-live")]
-    fn refresh_live_staleness(mut self) -> Self {
+    fn refresh_live_derived(mut self) -> Self {
         let now_unix_ms = current_unix_ms();
         if let Some(live) = self.live.take() {
-            self.live = Some(live.refresh_staleness_at(now_unix_ms));
+            self.live = Some(
+                live.refresh_staleness_at(now_unix_ms)
+                    .refresh_slot_lag(self.last_persisted_slot),
+            );
         }
         self
     }
@@ -293,7 +316,7 @@ async fn metrics_handler(State(state): State<StatusState>) -> impl IntoResponse 
 fn refresh_status(status: StatusSnapshot) -> StatusSnapshot {
     #[cfg(feature = "yellowstone-live")]
     {
-        status.refresh_live_staleness()
+        status.refresh_live_derived()
     }
 
     #[cfg(not(feature = "yellowstone-live"))]
@@ -368,6 +391,24 @@ fn render_metrics(status: &StatusSnapshot) -> String {
                 "Seconds since the last successfully persisted event batch.",
                 "",
                 seconds,
+            );
+        }
+        if let Some(slot) = live.last_observed_slot {
+            push_gauge(
+                &mut output,
+                "solana_stream_last_observed_slot",
+                "Last observed Yellowstone event slot.",
+                "",
+                slot,
+            );
+        }
+        if let Some(lag) = live.observed_to_persisted_slot_lag {
+            push_gauge(
+                &mut output,
+                "solana_stream_observed_to_persisted_slot_lag",
+                "Difference between the last observed Yellowstone slot and last persisted slot.",
+                "",
+                lag,
             );
         }
     }
@@ -567,7 +608,7 @@ mod tests {
             events_skipped: 0,
             batches_written: 0,
             write_summary: WriteSummary::default(),
-            last_persisted_slot: None,
+            last_persisted_slot: Some(40),
         };
         let live = super::LiveProducerStatus::default()
             .with_reconnecting(
@@ -576,9 +617,10 @@ mod tests {
                 "receive",
                 "yellowstone stream receive failed with gRPC status Unavailable",
             )
-            .with_event_observed_at(10_000)
+            .with_event_observed(42, 10_000)
             .with_batch_persisted_at(9_000)
-            .refresh_staleness_at(12_500);
+            .refresh_staleness_at(12_500)
+            .refresh_slot_lag(summary.last_persisted_slot);
         let status =
             StatusSnapshot::from_pipeline_mode(super::StreamMode::Yellowstone, "live", summary)
                 .with_live(live);
@@ -593,6 +635,8 @@ mod tests {
         assert!(metrics.contains("solana_stream_reconnect_delay_ms 1000"));
         assert!(metrics.contains("solana_stream_seconds_since_last_event 2"));
         assert!(metrics.contains("solana_stream_seconds_since_last_persisted_batch 3"));
+        assert!(metrics.contains("solana_stream_last_observed_slot 42"));
+        assert!(metrics.contains("solana_stream_observed_to_persisted_slot_lag 2"));
     }
 
     #[test]
@@ -645,7 +689,7 @@ mod tests {
             events_skipped: 0,
             batches_written: 0,
             write_summary: WriteSummary::default(),
-            last_persisted_slot: None,
+            last_persisted_slot: Some(10),
         };
         let status = StatusSnapshot::from_pipeline_mode(
             super::StreamMode::Yellowstone,
@@ -660,7 +704,7 @@ mod tests {
                     "subscribe",
                     "yellowstone subscribe failed with gRPC status Unavailable",
                 )
-                .with_event_observed_at(super::current_unix_ms().saturating_sub(2_000))
+                .with_event_observed(12, super::current_unix_ms().saturating_sub(2_000))
                 .with_batch_persisted_at(super::current_unix_ms().saturating_sub(3_000)),
         );
         let (_sender, receiver) = super::status_channel(status);
@@ -689,6 +733,8 @@ mod tests {
             "yellowstone subscribe failed with gRPC status Unavailable"
         );
         assert!(body["live"]["last_event_at_unix_ms"].is_number());
+        assert!(body["live"]["last_observed_at_unix_ms"].is_number());
+        assert_eq!(body["live"]["last_observed_slot"], 12);
         assert!(body["live"]["last_persisted_batch_at_unix_ms"].is_number());
         assert!(
             body["live"]["seconds_since_last_event"]
@@ -702,6 +748,7 @@ mod tests {
                 .unwrap_or_default()
                 >= 3
         );
+        assert_eq!(body["live"]["observed_to_persisted_slot_lag"], 2);
     }
 
     #[tokio::test]

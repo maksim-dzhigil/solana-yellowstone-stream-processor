@@ -238,7 +238,7 @@ async fn run_yellowstone(config: Config) -> Result<(), AppRunError> {
                 tracing::debug!("yellowstone status receiver dropped");
             }
         },
-        move |_| {
+        move |activity| {
             let now = Instant::now();
             if last_activity_status_sent
                 .is_some_and(|last| now.duration_since(last) < Duration::from_secs(1))
@@ -252,7 +252,7 @@ async fn run_yellowstone(config: Config) -> Result<(), AppRunError> {
                 .live
                 .clone()
                 .unwrap_or_default()
-                .with_event_observed_at(http::current_unix_ms());
+                .with_event_observed(activity.slot, http::current_unix_ms());
             status.live = Some(live);
             if activity_status_sender.send(status).is_err() {
                 tracing::debug!("yellowstone status receiver dropped");
