@@ -96,12 +96,16 @@ impl std::error::Error for HttpError {
 
 pub async fn serve(addr: &str, status: StatusSnapshot) -> Result<(), HttpError> {
     let (_sender, receiver) = status_channel(status);
-    serve_updates_until_shutdown(addr, receiver, shutdown_signal()).await
+    serve_status_updates_until_shutdown(addr, receiver, shutdown_signal()).await
 }
 
 #[cfg(feature = "yellowstone-live")]
-pub async fn serve_updates(addr: &str, status: StatusReceiver) -> Result<(), HttpError> {
-    serve_updates_until_shutdown(addr, status, shutdown_signal()).await
+pub async fn serve_updates_until_shutdown(
+    addr: &str,
+    status: StatusReceiver,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> Result<(), HttpError> {
+    serve_status_updates_until_shutdown(addr, status, shutdown).await
 }
 
 #[cfg(test)]
@@ -111,10 +115,10 @@ async fn serve_until_shutdown(
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<(), HttpError> {
     let (_sender, receiver) = status_channel(status);
-    serve_updates_until_shutdown(addr, receiver, shutdown).await
+    serve_status_updates_until_shutdown(addr, receiver, shutdown).await
 }
 
-async fn serve_updates_until_shutdown(
+async fn serve_status_updates_until_shutdown(
     addr: &str,
     status: StatusReceiver,
     shutdown: impl Future<Output = ()> + Send + 'static,

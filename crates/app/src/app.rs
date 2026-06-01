@@ -17,6 +17,8 @@ use solana_yellowstone_stream::source::EventSource;
 use solana_yellowstone_stream::yellowstone_live::{
     YellowstoneGrpcConfig, run_yellowstone_grpc_producer,
 };
+#[cfg(feature = "yellowstone-live")]
+use tokio::sync::watch;
 use tracing::info;
 
 pub async fn run(config: Config) -> Result<(), AppRunError> {
@@ -176,7 +178,11 @@ async fn run_yellowstone(config: Config) -> Result<(), AppRunError> {
     let (status_sender, status_receiver) = http::status_channel(initial_status);
     let status_stream_name = config.stream_name.clone();
 
-    let http_server = http::serve_updates(&config.http_addr, status_receiver);
+    let (shutdown_sender, shutdown_receiver) = watch::channel(false);
+    let http_shutdown = wait_for_shutdown(shutdown_receiver.clone());
+    info!(http_addr = %config.http_addr, "serving yellowstone http endpoints");
+    let http_server =
+        http::serve_updates_until_shutdown(&config.http_addr, status_receiver, http_shutdown);
     let pipeline = run_event_producer_pipeline_with_progress(
         move |sender| run_yellowstone_grpc_producer(yellowstone_config, sender),
         &writer,
@@ -194,10 +200,19 @@ async fn run_yellowstone(config: Config) -> Result<(), AppRunError> {
             }
         },
     );
+    let shutdown = shutdown_signal();
     tokio::pin!(http_server);
     tokio::pin!(pipeline);
+    tokio::pin!(shutdown);
 
     tokio::select! {
+        _ = &mut shutdown => {
+            info!("yellowstone shutdown requested");
+            let _ = shutdown_sender.send(true);
+            (&mut http_server).await?;
+            info!("yellowstone http server stopped");
+            Ok(())
+        }
         result = &mut http_server => {
             result?;
             info!("yellowstone http server stopped");
@@ -215,7 +230,26 @@ async fn run_yellowstone(config: Config) -> Result<(), AppRunError> {
                 last_persisted_slot = ?summary.last_persisted_slot,
                 "yellowstone pipeline completed"
             );
+            let _ = shutdown_sender.send(true);
+            (&mut http_server).await?;
+            info!("yellowstone http server stopped");
             Ok(())
+        }
+    }
+}
+
+#[cfg(feature = "yellowstone-live")]
+async fn shutdown_signal() {
+    if let Err(err) = tokio::signal::ctrl_c().await {
+        tracing::error!(error = %err, "failed to listen for shutdown signal");
+    }
+}
+
+#[cfg(feature = "yellowstone-live")]
+async fn wait_for_shutdown(mut shutdown: watch::Receiver<bool>) {
+    while !*shutdown.borrow() {
+        if shutdown.changed().await.is_err() {
+            break;
         }
     }
 }

@@ -2,7 +2,7 @@
 
 Reliability-first Rust service for ingesting Solana stream events from replay fixtures or feature-gated Yellowstone gRPC into durable PostgreSQL storage.
 
-Current status: replay MVP is the stable default path. Live Yellowstone ingestion exists behind the `yellowstone-live` feature with conservative slots-only defaults, opt-in transaction/block/entry subscriptions, transaction account filters, and concurrent HTTP status endpoints; provider reconnect and gap recovery policy are still future work.
+Current status: replay MVP is the stable default path. Live Yellowstone ingestion exists behind the `yellowstone-live` feature with conservative slots-only defaults, opt-in transaction/block/entry subscriptions, transaction account filters, concurrent HTTP status endpoints, and coordinated shutdown; provider reconnect and gap recovery policy are still future work.
 
 ## Architecture
 
@@ -38,6 +38,7 @@ flowchart LR
 - Idempotent writes through stable `event_id` values and `ON CONFLICT DO NOTHING`.
 - Replay resume from persisted stream cursor.
 - HTTP `/healthz`, `/readyz`, `/status`, and `/metrics` after replay completion and concurrently during live Yellowstone ingestion.
+- Coordinated live shutdown for HTTP and Yellowstone ingest tasks on shutdown signal.
 - Structured logs with redacted config/debug/error output for database URLs, Yellowstone endpoints, and tokens.
 - Unit, binary, HTTP contract, integration, and PostgreSQL-backed tests.
 

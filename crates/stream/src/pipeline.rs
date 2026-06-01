@@ -3,7 +3,7 @@ use solana_yellowstone_domain::event::NormalizedEvent;
 use solana_yellowstone_storage::{CursorStore, EventWriter, WriteSummary};
 use std::fmt;
 use std::future::Future;
-use tokio::sync::mpsc;
+use tokio::{sync::mpsc, task::JoinHandle};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PipelineConfig {
@@ -71,6 +71,39 @@ pub enum ProducerPipelineError<W, C, P> {
     Pipeline(PipelineError<W, C>),
     Producer(P),
     ProducerJoin(tokio::task::JoinError),
+}
+
+struct AbortOnDrop<T> {
+    handle: Option<JoinHandle<T>>,
+}
+
+impl<T> AbortOnDrop<T> {
+    fn new(handle: JoinHandle<T>) -> Self {
+        Self {
+            handle: Some(handle),
+        }
+    }
+
+    fn abort(&self) {
+        if let Some(handle) = &self.handle {
+            handle.abort();
+        }
+    }
+
+    async fn join(&mut self) -> Result<T, tokio::task::JoinError> {
+        self.handle
+            .take()
+            .expect("producer task should not be joined twice")
+            .await
+    }
+}
+
+impl<T> Drop for AbortOnDrop<T> {
+    fn drop(&mut self) {
+        if let Some(handle) = &self.handle {
+            handle.abort();
+        }
+    }
 }
 
 impl<W, C, P> fmt::Display for ProducerPipelineError<W, C, P>
@@ -172,7 +205,7 @@ where
     O: FnMut(PipelineSummary) + Send,
 {
     let (sender, receiver) = mpsc::channel(config.channel_capacity);
-    let producer = tokio::spawn(producer(sender));
+    let mut producer = AbortOnDrop::new(tokio::spawn(producer(sender)));
 
     let result = run_event_receiver_pipeline_with_progress(
         receiver,
@@ -187,10 +220,10 @@ where
     match result {
         Err(err) => {
             producer.abort();
-            let _ = producer.await;
+            let _ = producer.join().await;
             Err(ProducerPipelineError::Pipeline(err))
         }
-        Ok(summary) => match producer.await {
+        Ok(summary) => match producer.join().await {
             Ok(Ok(())) => Ok(summary),
             Ok(Err(err)) => Err(ProducerPipelineError::Producer(err)),
             Err(err) => Err(ProducerPipelineError::ProducerJoin(err)),
