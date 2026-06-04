@@ -172,6 +172,7 @@ async fn run_yellowstone(config: Config) -> Result<(), AppRunError> {
         initial_delay: config.yellowstone_reconnect.initial_delay,
         max_delay: config.yellowstone_reconnect.max_delay,
         max_retries: config.yellowstone_reconnect.max_retries,
+        reset_after: config.yellowstone_reconnect.reset_after,
     };
 
     let mut yellowstone_config = YellowstoneGrpcConfig::slots_only(

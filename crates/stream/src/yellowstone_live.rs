@@ -17,12 +17,14 @@ const DEFAULT_FILTER_NAME: &str = "default";
 
 const DEFAULT_RECONNECT_INITIAL_DELAY: Duration = Duration::from_secs(1);
 const DEFAULT_RECONNECT_MAX_DELAY: Duration = Duration::from_secs(30);
+const DEFAULT_RECONNECT_RESET_AFTER: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct YellowstoneReconnectConfig {
     pub initial_delay: Duration,
     pub max_delay: Duration,
     pub max_retries: Option<u32>,
+    pub reset_after: Option<Duration>,
 }
 
 impl Default for YellowstoneReconnectConfig {
@@ -31,6 +33,7 @@ impl Default for YellowstoneReconnectConfig {
             initial_delay: DEFAULT_RECONNECT_INITIAL_DELAY,
             max_delay: DEFAULT_RECONNECT_MAX_DELAY,
             max_retries: None,
+            reset_after: Some(DEFAULT_RECONNECT_RESET_AFTER),
         }
     }
 }
@@ -48,6 +51,7 @@ impl YellowstoneReconnectConfig {
             initial_delay,
             max_delay,
             max_retries: self.max_retries,
+            reset_after: self.reset_after,
         }
     }
 }
@@ -334,16 +338,26 @@ where
     loop {
         configure_attempt(&mut config);
         let attempt_from_slot = config.from_slot;
+        let attempt_start = std::time::Instant::now();
         match attempt(config.clone()).await {
             Ok(()) => return Ok(()),
             Err(err) if !err.is_retryable() => return Err(err),
             Err(err) => {
-                retry_attempt = retry_attempt.saturating_add(1);
                 if reconnect
-                    .max_retries
-                    .is_some_and(|max_retries| retry_attempt > max_retries)
+                    .reset_after
+                    .is_some_and(|grace| attempt_start.elapsed() >= grace)
                 {
-                    return Err(err);
+                    retry_attempt = 0;
+                    delay = reconnect.initial_delay;
+                } else {
+                    retry_attempt = retry_attempt.saturating_add(1);
+                    if reconnect
+                        .max_retries
+                        .is_some_and(|max_retries| retry_attempt > max_retries)
+                    {
+                        return Err(err);
+                    }
+                    delay = next_backoff_delay(delay, reconnect.max_delay);
                 }
 
                 let event = YellowstoneReconnectEvent {
@@ -361,10 +375,10 @@ where
                     from_slot = ?event.from_slot,
                     error_kind = event.error_kind.as_str(),
                     error = %event.error_message,
+                    reset = reconnect.reset_after.is_some_and(|grace| attempt_start.elapsed() >= grace),
                     "yellowstone producer failed; reconnecting after backoff"
                 );
                 sleep(delay).await;
-                delay = next_backoff_delay(delay, reconnect.max_delay);
             }
         }
     }
@@ -628,6 +642,7 @@ mod tests {
                 initial_delay: Duration::from_millis(1),
                 max_delay: Duration::from_millis(1),
                 max_retries: Some(3),
+                reset_after: None,
             },
             move |config| {
                 let attempts = attempts_for_callback.clone();
@@ -701,6 +716,7 @@ mod tests {
             initial_delay: std::time::Duration::ZERO,
             max_delay: std::time::Duration::ZERO,
             max_retries: Some(3),
+            reset_after: None,
         }
         .normalized();
 
@@ -783,6 +799,7 @@ mod tests {
                 initial_delay: Duration::from_millis(1),
                 max_delay: Duration::from_millis(1),
                 max_retries: Some(2),
+                reset_after: None,
             },
             move |_config| {
                 let attempts = attempts_for_callback.clone();
@@ -839,5 +856,56 @@ mod tests {
             distinct.len() > 1,
             "jitter should produce more than one distinct delay over 100 runs"
         );
+    }
+
+    #[tokio::test]
+    async fn reconnect_loop_resets_backoff_after_grace_period() {
+        let delays = Arc::new(Mutex::new(Vec::new()));
+        let delays_for_callback = delays.clone();
+        let attempt_count = Arc::new(Mutex::new(0_u32));
+        let attempt_count_for_callback = attempt_count.clone();
+
+        super::run_yellowstone_reconnect_loop(
+            YellowstoneGrpcConfig::slots_only("https://provider.example", "mainnet-beta"),
+            YellowstoneReconnectConfig {
+                initial_delay: Duration::from_millis(1),
+                max_delay: Duration::from_millis(10),
+                max_retries: Some(5),
+                reset_after: Some(Duration::from_millis(30)),
+            },
+            move |_config| {
+                let attempt_count = attempt_count_for_callback.clone();
+                async move {
+                    let mut count = attempt_count.lock().expect("attempt count lock");
+                    *count += 1;
+                    match *count {
+                        1 => Err(YellowstoneGrpcError::StreamClosed),
+                        2 => {
+                            tokio::time::sleep(Duration::from_millis(50)).await;
+                            Err(YellowstoneGrpcError::StreamClosed)
+                        }
+                        _ => Ok(()),
+                    }
+                }
+            },
+            move |event| {
+                delays_for_callback
+                    .lock()
+                    .expect("delays lock")
+                    .push((event.retry_attempt, event.delay.as_millis()));
+            },
+            |_| {},
+        )
+        .await
+        .expect("reconnect loop should succeed after reset");
+
+        let observed = delays.lock().expect("delays lock");
+        assert_eq!(observed.len(), 2);
+        // First failure: retry_attempt = 1, delay increased from initial 1ms
+        assert_eq!(observed[0].0, 1);
+        assert!(observed[0].1 > 1, "delay should increase after first failure");
+        // Second failure streamed for 50ms (> 30ms grace) -> backoff reset
+        assert_eq!(observed[1].0, 0, "retry_attempt should reset after grace period");
+        assert_eq!(observed[1].1, 1, "delay should reset to initial after grace period");
     }
 }

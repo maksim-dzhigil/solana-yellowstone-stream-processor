@@ -73,6 +73,7 @@ pub struct YellowstoneReconnectSettings {
     pub initial_delay: Duration,
     pub max_delay: Duration,
     pub max_retries: Option<u32>,
+    pub reset_after: Option<Duration>,
 }
 
 impl Default for YellowstoneReconnectSettings {
@@ -81,16 +82,23 @@ impl Default for YellowstoneReconnectSettings {
             initial_delay: Duration::from_secs(1),
             max_delay: Duration::from_secs(30),
             max_retries: None,
+            reset_after: Some(Duration::from_secs(30)),
         }
     }
 }
 
 impl YellowstoneReconnectSettings {
-    fn from_ms(initial_delay_ms: u64, max_delay_ms: u64, max_retries: Option<u32>) -> Self {
+    fn from_ms(
+        initial_delay_ms: u64,
+        max_delay_ms: u64,
+        max_retries: Option<u32>,
+        reset_after_ms: Option<u64>,
+    ) -> Self {
         Self {
             initial_delay: Duration::from_millis(initial_delay_ms),
             max_delay: Duration::from_millis(max_delay_ms),
             max_retries,
+            reset_after: reset_after_ms.map(Duration::from_millis),
         }
     }
 }
@@ -164,6 +172,10 @@ impl fmt::Debug for Config {
             .field(
                 "yellowstone_reconnect_max_retries",
                 &self.yellowstone_reconnect.max_retries,
+            )
+            .field(
+                "yellowstone_reconnect_reset_after_ms",
+                &self.yellowstone_reconnect.reset_after.map(|d| d.as_millis()),
             )
             .finish()
     }
@@ -493,8 +505,17 @@ fn env_yellowstone_reconnect_settings(
     let max_delay_ms =
         env_positive_u64_or_default(source, "YELLOWSTONE_RECONNECT_MAX_DELAY_MS", 30_000)?;
     let max_retries = env_reconnect_max_retries(source)?;
-    let settings =
-        YellowstoneReconnectSettings::from_ms(initial_delay_ms, max_delay_ms, max_retries);
+    let reset_after_ms = env_positive_u64_or_default(
+        source,
+        "YELLOWSTONE_RECONNECT_RESET_AFTER_MS",
+        30_000,
+    )?;
+    let settings = YellowstoneReconnectSettings::from_ms(
+        initial_delay_ms,
+        max_delay_ms,
+        max_retries,
+        Some(reset_after_ms),
+    );
 
     validate_yellowstone_reconnect_settings(
         settings,
@@ -512,6 +533,17 @@ fn env_positive_u64_or_default(
 ) -> Result<u64, ConfigError> {
     let raw = env_or_default(source, key, &default.to_string())?;
     parse_positive_u64(key, &raw)
+}
+
+fn env_optional_positive_u64(
+    source: &impl ConfigSource,
+    key: &'static str,
+) -> Result<Option<u64>, ConfigError> {
+    match source.get(key)? {
+        Some(value) if value.trim().is_empty() => Err(ConfigError::Empty { key }),
+        Some(value) => Ok(Some(parse_positive_u64(key, &value)?)),
+        None => Ok(None),
+    }
 }
 
 fn env_reconnect_max_retries(source: &impl ConfigSource) -> Result<Option<u32>, ConfigError> {
@@ -701,6 +733,7 @@ mod tests {
                 initial_delay: Duration::from_millis(250),
                 max_delay: Duration::from_millis(5_000),
                 max_retries: Some(7),
+                reset_after: Some(Duration::from_secs(30)),
             }
         );
     }
@@ -830,6 +863,7 @@ mod tests {
                 initial_delay: Duration::from_millis(500),
                 max_delay: Duration::from_millis(10_000),
                 max_retries: None,
+                reset_after: Some(Duration::from_secs(30)),
             }
         );
         assert!(config.exit_after_replay);
