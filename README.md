@@ -118,7 +118,7 @@ For a detailed architecture overview, see [docs/architecture.md](docs/architectu
 | Contiguous finalized slot watermark for reconnect | **Implemented** |
 | Malformed update skipping and decode error metrics | **Implemented** |
 | Provider compatibility tracking | Documented, community-verified |
-| Synthetic replay generator + benchmarks | **Planned** |
+| Synthetic replay generator + benchmarks | **Implemented** |
 | Infra-grade metrics (batch latency, channel pressure, slot lag) | **Planned** |
 | Gap-free live recovery with fork handling | Designed, future milestone |
 | Token balance delta extraction and DEX swap inference | Future milestone |
@@ -178,6 +178,7 @@ The project includes a compatibility checklist and a status matrix for Yellowsto
 make check          # fmt, tests, clippy
 make test-postgres  # include PostgreSQL-backed integration tests
 make verify         # full quality gate (check + postgres tests)
+make bench          # generate 1M fixture + run benchmark
 ```
 
 ## License
