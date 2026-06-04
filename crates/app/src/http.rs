@@ -57,6 +57,7 @@ pub struct LiveProducerStatus {
     pub seconds_since_last_event: Option<u64>,
     pub seconds_since_last_persisted_batch: Option<u64>,
     pub observed_to_persisted_slot_lag: Option<u64>,
+    pub decode_errors_total: u64,
 }
 
 #[cfg(feature = "yellowstone-live")]
@@ -78,6 +79,7 @@ impl Default for LiveProducerStatus {
             seconds_since_last_event: None,
             seconds_since_last_persisted_batch: None,
             observed_to_persisted_slot_lag: None,
+            decode_errors_total: 0,
         }
     }
 }
@@ -466,6 +468,12 @@ fn render_metrics(status: &StatusSnapshot) -> String {
                 lag,
             );
         }
+        push_counter(
+            &mut output,
+            "solana_stream_decode_errors_total",
+            "Total malformed Yellowstone updates skipped.",
+            live.decode_errors_total as usize,
+        );
     }
 
     output

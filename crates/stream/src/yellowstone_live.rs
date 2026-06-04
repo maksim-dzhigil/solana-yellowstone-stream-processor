@@ -276,12 +276,14 @@ pub async fn run_yellowstone_grpc_producer_with_reconnect_status<O>(
 where
     O: FnMut(YellowstoneReconnectEvent) + Send,
 {
+    let noop = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     run_yellowstone_grpc_producer_with_reconnect_status_and_config(
         config,
         reconnect,
         sender,
         on_reconnect,
         |_| {},
+        Some(noop),
     )
     .await
 }
@@ -292,6 +294,7 @@ pub async fn run_yellowstone_grpc_producer_with_reconnect_status_and_config<O, C
     sender: mpsc::Sender<NormalizedEvent>,
     on_reconnect: O,
     configure_attempt: C,
+    decode_errors: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
 ) -> Result<(), YellowstoneGrpcError>
 where
     O: FnMut(YellowstoneReconnectEvent) + Send,
@@ -302,7 +305,8 @@ where
         reconnect,
         move |attempt_config| {
             let sender = sender.clone();
-            async move { run_yellowstone_grpc_producer(attempt_config, sender).await }
+            let decode_errors = decode_errors.clone();
+            async move { run_yellowstone_grpc_producer(attempt_config, sender, decode_errors).await }
         },
         on_reconnect,
         configure_attempt,
@@ -373,6 +377,7 @@ fn next_backoff_delay(current: Duration, max_delay: Duration) -> Duration {
 pub async fn run_yellowstone_grpc_producer(
     config: YellowstoneGrpcConfig,
     sender: mpsc::Sender<NormalizedEvent>,
+    decode_errors: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
 ) -> Result<(), YellowstoneGrpcError> {
     let request = config.subscribe_request()?;
     let mut client = GeyserClient::connect(config.endpoint.clone())
@@ -397,8 +402,16 @@ pub async fn run_yellowstone_grpc_producer(
         .await
         .map_err(YellowstoneGrpcError::Receive)?
     {
-        let events = normalize_yellowstone_proto_update(&config.cluster, update)
-            .map_err(YellowstoneGrpcError::Normalize)?;
+        let events = match normalize_yellowstone_proto_update(&config.cluster, update) {
+            Ok(events) => events,
+            Err(err) => {
+                tracing::warn!(error = %err, "skipping malformed yellowstone update");
+                if let Some(ref counter) = decode_errors {
+                    counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                continue;
+            }
+        };
         for event in events {
             sender
                 .send(event)

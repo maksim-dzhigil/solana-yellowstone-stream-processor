@@ -198,6 +198,7 @@ async fn run_yellowstone(config: Config) -> Result<(), AppRunError> {
     let last_contiguous_finalized_slot = Arc::new(AtomicU64::new(encode_slot(
         frontier.last_contiguous_finalized_slot,
     )));
+    let decode_errors = Arc::new(AtomicU64::new(0));
 
     let pipeline_config = PipelineConfig {
         batch_size: config.batch_size,
@@ -243,6 +244,7 @@ async fn run_yellowstone(config: Config) -> Result<(), AppRunError> {
     let progress_last_contiguous_slot = last_contiguous_finalized_slot.clone();
     let mut last_batches_written = 0;
     let mut last_activity_status_sent = None::<Instant>;
+    let decode_errors_for_producer = decode_errors.clone();
     let pipeline = run_event_producer_pipeline_with_progress_and_activity(
         move |sender| {
             run_yellowstone_grpc_producer_with_reconnect_status_and_config(
@@ -271,6 +273,7 @@ async fn run_yellowstone(config: Config) -> Result<(), AppRunError> {
                     attempt_config.from_slot =
                         decode_slot(producer_last_contiguous_slot.load(Ordering::Relaxed));
                 },
+                Some(decode_errors_for_producer),
             )
         },
         &writer,
@@ -285,6 +288,7 @@ async fn run_yellowstone(config: Config) -> Result<(), AppRunError> {
                 .clone()
                 .unwrap_or_default()
                 .running();
+            live.decode_errors_total = decode_errors.load(Ordering::Relaxed);
             if summary.batches_written > last_batches_written {
                 live = live.with_batch_persisted_at(http::current_unix_ms());
                 if let Some(slot) = summary.last_contiguous_finalized_slot {
