@@ -83,6 +83,8 @@ fn pipeline_config() -> PipelineConfig {
         batch_size: 10,
         channel_capacity: 2,
         resume_after_slot: None,
+        advance_finalized_watermark: false,
+        use_slot_resume: true,
     }
 }
 

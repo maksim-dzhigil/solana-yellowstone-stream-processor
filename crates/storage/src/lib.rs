@@ -1,5 +1,6 @@
 pub mod cursor;
 pub mod postgres;
+pub mod slots;
 
 use crate::cursor::StreamCursor;
 use async_trait::async_trait;

@@ -159,7 +159,7 @@ impl YellowstoneGrpcConfig {
             slots.insert(
                 self.filter_name.clone(),
                 SubscribeRequestFilterSlots {
-                    filter_by_commitment: Some(true),
+                    filter_by_commitment: Some(false),
                     interslot_updates: Some(false),
                 },
             );
@@ -510,7 +510,7 @@ mod tests {
         assert_eq!(request.from_slot, None);
 
         let slot_filter = request.slots.get("default").expect("slot filter exists");
-        assert_eq!(slot_filter.filter_by_commitment, Some(true));
+        assert_eq!(slot_filter.filter_by_commitment, Some(false));
         assert_eq!(slot_filter.interslot_updates, Some(false));
     }
 

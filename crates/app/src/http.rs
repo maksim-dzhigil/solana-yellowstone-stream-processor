@@ -161,6 +161,8 @@ pub struct StatusSnapshot {
     pub mode: StreamMode,
     pub stream_name: String,
     pub last_persisted_slot: Option<u64>,
+    pub last_contiguous_finalized_slot: Option<u64>,
+    pub last_finalized_slot: Option<u64>,
     pub events_seen: usize,
     pub events_skipped: usize,
     pub batches_written: usize,
@@ -187,6 +189,8 @@ impl StatusSnapshot {
             mode,
             stream_name: stream_name.into(),
             last_persisted_slot: summary.last_persisted_slot,
+            last_contiguous_finalized_slot: summary.last_contiguous_finalized_slot,
+            last_finalized_slot: summary.last_finalized_slot,
             events_seen: summary.events_seen,
             events_skipped: summary.events_skipped,
             batches_written: summary.batches_written,
@@ -610,6 +614,8 @@ mod tests {
                 deduplicated: 1,
             },
             last_persisted_slot: Some(42),
+            last_contiguous_finalized_slot: None,
+            last_finalized_slot: None,
         };
 
         let status = StatusSnapshot::from_pipeline("replay", summary);
@@ -637,6 +643,8 @@ mod tests {
                 deduplicated: 1,
             },
             last_persisted_slot: Some(42),
+            last_contiguous_finalized_slot: None,
+            last_finalized_slot: None,
         };
         let status = StatusSnapshot::from_pipeline("replay", summary);
 
@@ -660,6 +668,8 @@ mod tests {
             batches_written: 0,
             write_summary: WriteSummary::default(),
             last_persisted_slot: Some(40),
+            last_contiguous_finalized_slot: None,
+            last_finalized_slot: None,
         };
         let live = super::LiveProducerStatus::default()
             .with_reconnecting(
@@ -702,6 +712,8 @@ mod tests {
             batches_written: 0,
             write_summary: WriteSummary::default(),
             last_persisted_slot: None,
+            last_contiguous_finalized_slot: None,
+            last_finalized_slot: None,
         };
         let status = StatusSnapshot::from_pipeline("replay", summary);
 
@@ -759,6 +771,8 @@ mod tests {
             batches_written: 0,
             write_summary: WriteSummary::default(),
             last_persisted_slot: Some(10),
+            last_contiguous_finalized_slot: None,
+            last_finalized_slot: None,
         };
         let status = StatusSnapshot::from_pipeline_mode(
             super::StreamMode::Yellowstone,
@@ -886,6 +900,8 @@ mod tests {
                 batches_written: 0,
                 write_summary: WriteSummary::default(),
                 last_persisted_slot: None,
+                last_contiguous_finalized_slot: None,
+                last_finalized_slot: None,
             },
         )
     }
@@ -903,6 +919,8 @@ mod tests {
                     deduplicated: 1,
                 },
                 last_persisted_slot: Some(42),
+            last_contiguous_finalized_slot: None,
+            last_finalized_slot: None,
             },
         )
     }
@@ -962,6 +980,8 @@ mod tests {
             batches_written: 0,
             write_summary: WriteSummary::default(),
             last_persisted_slot: None,
+            last_contiguous_finalized_slot: None,
+            last_finalized_slot: None,
         };
         let status = StatusSnapshot::from_pipeline("replay\\test\nmainnet\"", summary);
 

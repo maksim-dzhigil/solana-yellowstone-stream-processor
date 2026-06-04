@@ -1,6 +1,9 @@
 use crate::batcher::Batcher;
+use crate::slot_state::slot_state_from_event;
 use solana_yellowstone_domain::event::NormalizedEvent;
+use solana_yellowstone_storage::slots::{NoopSlotStateStore, SlotStateStore, SlotStateUpdate};
 use solana_yellowstone_storage::{CursorStore, EventWriter, WriteSummary};
+use std::convert::Infallible;
 use std::fmt;
 use std::future::Future;
 use tokio::{sync::mpsc, task::JoinHandle};
@@ -10,6 +13,8 @@ pub struct PipelineConfig {
     pub batch_size: usize,
     pub channel_capacity: usize,
     pub resume_after_slot: Option<u64>,
+    pub advance_finalized_watermark: bool,
+    pub use_slot_resume: bool,
 }
 
 impl Default for PipelineConfig {
@@ -18,6 +23,8 @@ impl Default for PipelineConfig {
             batch_size: 500,
             channel_capacity: 10_000,
             resume_after_slot: None,
+            advance_finalized_watermark: false,
+            use_slot_resume: true,
         }
     }
 }
@@ -29,6 +36,8 @@ pub struct PipelineSummary {
     pub batches_written: usize,
     pub write_summary: WriteSummary,
     pub last_persisted_slot: Option<u64>,
+    pub last_contiguous_finalized_slot: Option<u64>,
+    pub last_finalized_slot: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,43 +47,48 @@ pub struct PipelineActivity {
 }
 
 #[derive(Debug)]
-pub enum PipelineError<W, C> {
+pub enum PipelineError<W, C, S> {
     Write(W),
     Cursor(C),
+    SlotState(S),
     ProducerJoin(tokio::task::JoinError),
 }
 
-impl<W, C> fmt::Display for PipelineError<W, C>
+impl<W, C, S> fmt::Display for PipelineError<W, C, S>
 where
     W: fmt::Display,
     C: fmt::Display,
+    S: fmt::Display,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Write(err) => write!(f, "failed to write event batch: {err}"),
             Self::Cursor(err) => write!(f, "failed to update stream cursor: {err}"),
+            Self::SlotState(err) => write!(f, "failed to update finalized slot state: {err}"),
             Self::ProducerJoin(err) => write!(f, "failed to join event producer task: {err}"),
         }
     }
 }
 
-impl<W, C> std::error::Error for PipelineError<W, C>
+impl<W, C, S> std::error::Error for PipelineError<W, C, S>
 where
     W: std::error::Error + 'static,
     C: std::error::Error + 'static,
+    S: std::error::Error + 'static,
 {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Write(err) => Some(err),
             Self::Cursor(err) => Some(err),
+            Self::SlotState(err) => Some(err),
             Self::ProducerJoin(err) => Some(err),
         }
     }
 }
 
 #[derive(Debug)]
-pub enum ProducerPipelineError<W, C, P> {
-    Pipeline(PipelineError<W, C>),
+pub enum ProducerPipelineError<W, C, S, P> {
+    Pipeline(PipelineError<W, C, S>),
     Producer(P),
     ProducerJoin(tokio::task::JoinError),
 }
@@ -112,10 +126,11 @@ impl<T> Drop for AbortOnDrop<T> {
     }
 }
 
-impl<W, C, P> fmt::Display for ProducerPipelineError<W, C, P>
+impl<W, C, S, P> fmt::Display for ProducerPipelineError<W, C, S, P>
 where
     W: fmt::Display,
     C: fmt::Display,
+    S: fmt::Display,
     P: fmt::Display,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -127,10 +142,11 @@ where
     }
 }
 
-impl<W, C, P> std::error::Error for ProducerPipelineError<W, C, P>
+impl<W, C, S, P> std::error::Error for ProducerPipelineError<W, C, S, P>
 where
     W: std::error::Error + 'static,
     C: std::error::Error + 'static,
+    S: std::error::Error + 'static,
     P: std::error::Error + 'static,
 {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
@@ -148,7 +164,7 @@ pub async fn run_replay_pipeline<I, W, C>(
     cursor_store: &C,
     stream_name: &str,
     config: PipelineConfig,
-) -> Result<PipelineSummary, PipelineError<W::Error, C::Error>>
+) -> Result<PipelineSummary, PipelineError<W::Error, C::Error, Infallible>>
 where
     I: IntoIterator<Item = NormalizedEvent> + Send + 'static,
     I::IntoIter: Send,
@@ -175,7 +191,7 @@ pub async fn run_event_producer_pipeline<P, F, E, W, C>(
     cursor_store: &C,
     stream_name: &str,
     config: PipelineConfig,
-) -> Result<PipelineSummary, ProducerPipelineError<W::Error, C::Error, E>>
+) -> Result<PipelineSummary, ProducerPipelineError<W::Error, C::Error, Infallible, E>>
 where
     P: FnOnce(mpsc::Sender<NormalizedEvent>) -> F + Send + 'static,
     F: Future<Output = Result<(), E>> + Send + 'static,
@@ -201,7 +217,7 @@ pub async fn run_event_producer_pipeline_with_progress<P, F, E, W, C, O>(
     stream_name: &str,
     config: PipelineConfig,
     on_progress: O,
-) -> Result<PipelineSummary, ProducerPipelineError<W::Error, C::Error, E>>
+) -> Result<PipelineSummary, ProducerPipelineError<W::Error, C::Error, Infallible, E>>
 where
     P: FnOnce(mpsc::Sender<NormalizedEvent>) -> F + Send + 'static,
     F: Future<Output = Result<(), E>> + Send + 'static,
@@ -214,6 +230,7 @@ where
         producer,
         writer,
         cursor_store,
+        &NoopSlotStateStore,
         stream_name,
         config,
         on_progress,
@@ -222,21 +239,24 @@ where
     .await
 }
 
-pub async fn run_event_producer_pipeline_with_progress_and_activity<P, F, E, W, C, O, A>(
+#[allow(clippy::too_many_arguments)]
+pub async fn run_event_producer_pipeline_with_progress_and_activity<P, F, E, W, C, S, O, A>(
     producer: P,
     writer: &W,
     cursor_store: &C,
+    slot_state_store: &S,
     stream_name: &str,
     config: PipelineConfig,
     on_progress: O,
     on_activity: A,
-) -> Result<PipelineSummary, ProducerPipelineError<W::Error, C::Error, E>>
+) -> Result<PipelineSummary, ProducerPipelineError<W::Error, C::Error, S::Error, E>>
 where
     P: FnOnce(mpsc::Sender<NormalizedEvent>) -> F + Send + 'static,
     F: Future<Output = Result<(), E>> + Send + 'static,
     E: Send + 'static,
     W: EventWriter + Sync,
     C: CursorStore + Sync,
+    S: SlotStateStore + Sync,
     O: FnMut(PipelineSummary) + Send,
     A: FnMut(PipelineActivity) + Send,
 {
@@ -247,6 +267,7 @@ where
         receiver,
         writer,
         cursor_store,
+        slot_state_store,
         stream_name,
         config,
         on_progress,
@@ -274,7 +295,7 @@ pub async fn run_event_receiver_pipeline<W, C>(
     cursor_store: &C,
     stream_name: &str,
     config: PipelineConfig,
-) -> Result<PipelineSummary, PipelineError<W::Error, C::Error>>
+) -> Result<PipelineSummary, PipelineError<W::Error, C::Error, Infallible>>
 where
     W: EventWriter + Sync,
     C: CursorStore + Sync,
@@ -297,7 +318,7 @@ async fn run_event_receiver_pipeline_with_progress<W, C, O>(
     stream_name: &str,
     config: PipelineConfig,
     on_progress: O,
-) -> Result<PipelineSummary, PipelineError<W::Error, C::Error>>
+) -> Result<PipelineSummary, PipelineError<W::Error, C::Error, Infallible>>
 where
     W: EventWriter + Sync,
     C: CursorStore + Sync,
@@ -307,6 +328,7 @@ where
         events,
         writer,
         cursor_store,
+        &NoopSlotStateStore,
         stream_name,
         config,
         on_progress,
@@ -315,18 +337,21 @@ where
     .await
 }
 
-async fn run_event_receiver_pipeline_with_progress_and_activity<W, C, O, A>(
+#[allow(clippy::too_many_arguments)]
+async fn run_event_receiver_pipeline_with_progress_and_activity<W, C, S, O, A>(
     mut events: mpsc::Receiver<NormalizedEvent>,
     writer: &W,
     cursor_store: &C,
+    slot_state_store: &S,
     stream_name: &str,
     config: PipelineConfig,
     mut on_progress: O,
     mut on_activity: A,
-) -> Result<PipelineSummary, PipelineError<W::Error, C::Error>>
+) -> Result<PipelineSummary, PipelineError<W::Error, C::Error, S::Error>>
 where
     W: EventWriter + Sync,
     C: CursorStore + Sync,
+    S: SlotStateStore + Sync,
     O: FnMut(PipelineSummary) + Send,
     A: FnMut(PipelineActivity) + Send,
 {
@@ -344,19 +369,37 @@ where
             events_seen: summary.events_seen,
         });
 
-        if should_skip_event(&event, config.resume_after_slot) {
+        if should_skip_event(&event, config.resume_after_slot, config.use_slot_resume) {
             summary.events_skipped += 1;
             continue;
         }
 
         if let Some(batch) = batcher.push(event) {
-            write_batch(writer, cursor_store, stream_name, &batch, &mut summary).await?;
+            write_batch(
+                writer,
+                cursor_store,
+                slot_state_store,
+                stream_name,
+                config.advance_finalized_watermark,
+                &batch,
+                &mut summary,
+            )
+            .await?;
             on_progress(summary);
         }
     }
 
     if let Some(batch) = batcher.flush() {
-        write_batch(writer, cursor_store, stream_name, &batch, &mut summary).await?;
+        write_batch(
+            writer,
+            cursor_store,
+            slot_state_store,
+            stream_name,
+            config.advance_finalized_watermark,
+            &batch,
+            &mut summary,
+        )
+        .await?;
     }
 
     on_progress(summary);
@@ -374,22 +417,31 @@ where
     }
 }
 
-fn should_skip_event(event: &NormalizedEvent, resume_after_slot: Option<u64>) -> bool {
-    resume_after_slot.is_some_and(|slot| event.slot() <= slot)
+fn should_skip_event(
+    event: &NormalizedEvent,
+    resume_after_slot: Option<u64>,
+    use_slot_resume: bool,
+) -> bool {
+    use_slot_resume && resume_after_slot.is_some_and(|slot| event.slot() <= slot)
 }
 
-async fn write_batch<W, C>(
+#[allow(clippy::too_many_arguments)]
+async fn write_batch<W, C, S>(
     writer: &W,
     cursor_store: &C,
+    slot_state_store: &S,
     stream_name: &str,
+    advance_finalized_watermark: bool,
     batch: &[NormalizedEvent],
     summary: &mut PipelineSummary,
-) -> Result<(), PipelineError<W::Error, C::Error>>
+) -> Result<(), PipelineError<W::Error, C::Error, S::Error>>
 where
     W: EventWriter + Sync,
     C: CursorStore + Sync,
+    S: SlotStateStore + Sync,
 {
     let last_slot = batch.iter().map(|event| event.slot()).max();
+
     let write_summary = writer
         .write_batch(batch)
         .await
@@ -407,6 +459,24 @@ where
         );
     }
 
+    let slot_states: Vec<SlotStateUpdate> =
+        batch.iter().filter_map(slot_state_from_event).collect();
+    if !slot_states.is_empty() {
+        slot_state_store
+            .record_slot_states(stream_name, &slot_states)
+            .await
+            .map_err(PipelineError::SlotState)?;
+
+        if advance_finalized_watermark && slot_states.iter().any(|state| state.finalized) {
+            let frontier = slot_state_store
+                .advance_contiguous_finalized(stream_name)
+                .await
+                .map_err(PipelineError::SlotState)?;
+            summary.last_contiguous_finalized_slot = frontier.last_contiguous_finalized_slot;
+            summary.last_finalized_slot = frontier.last_finalized_slot;
+        }
+    }
+
     summary.batches_written += 1;
     summary.write_summary += write_summary;
     Ok(())
@@ -418,17 +488,83 @@ mod tests {
         PipelineConfig, PipelineError, PipelineSummary, ProducerPipelineError,
         run_event_producer_pipeline, run_event_producer_pipeline_with_progress,
         run_event_producer_pipeline_with_progress_and_activity, run_event_receiver_pipeline,
-        run_replay_pipeline, send_events,
+        run_event_receiver_pipeline_with_progress_and_activity, run_replay_pipeline, send_events,
     };
     use async_trait::async_trait;
     use serde_json::json;
-    use solana_yellowstone_domain::event::{EventIdentity, NormalizedEvent};
+    use solana_yellowstone_domain::event::{EventIdentity, NormalizedEvent, SlotStatus};
+    use solana_yellowstone_storage::slots::{
+        FinalizedFrontier, FinalizedMap, NoopSlotStateStore, SlotStateStore, SlotStateUpdate,
+        advance,
+    };
     use solana_yellowstone_storage::{
         CursorStore, EventWriter, WriteSummary, cursor::StreamCursor,
     };
     use std::fmt;
     use std::sync::Mutex;
     use tokio::sync::mpsc;
+
+    #[derive(Debug, Default)]
+    struct FakeSlotStateStore {
+        finalized: Mutex<FinalizedMap>,
+        anchor: Mutex<Option<u64>>,
+    }
+
+    #[async_trait]
+    impl SlotStateStore for FakeSlotStateStore {
+        type Error = FakeError;
+
+        async fn record_slot_states(
+            &self,
+            _stream_name: &str,
+            updates: &[SlotStateUpdate],
+        ) -> Result<(), Self::Error> {
+            let mut finalized = self.finalized.lock().expect("finalized lock");
+            for update in updates {
+                if update.finalized {
+                    finalized.insert(update.slot, update.parent_slot);
+                }
+            }
+            Ok(())
+        }
+
+        async fn get_finalized_frontier(
+            &self,
+            _stream_name: &str,
+        ) -> Result<FinalizedFrontier, Self::Error> {
+            let finalized = self.finalized.lock().expect("finalized lock");
+            Ok(FinalizedFrontier {
+                last_contiguous_finalized_slot: *self.anchor.lock().expect("anchor lock"),
+                last_finalized_slot: finalized.max_finalized(),
+            })
+        }
+
+        async fn advance_contiguous_finalized(
+            &self,
+            _stream_name: &str,
+        ) -> Result<FinalizedFrontier, Self::Error> {
+            let finalized = self.finalized.lock().expect("finalized lock");
+            let mut anchor = self.anchor.lock().expect("anchor lock");
+            if let Some(new_watermark) = advance(*anchor, &finalized) {
+                *anchor = Some(anchor.map_or(new_watermark, |current| current.max(new_watermark)));
+            }
+            Ok(FinalizedFrontier {
+                last_contiguous_finalized_slot: *anchor,
+                last_finalized_slot: finalized.max_finalized(),
+            })
+        }
+    }
+
+    fn finalized_slot(slot: u64, parent: u64) -> NormalizedEvent {
+        NormalizedEvent::new(
+            EventIdentity::Slot {
+                cluster: "localnet".to_owned(),
+                slot,
+                status: SlotStatus::Finalized,
+            },
+            json!({ "parent": parent }),
+        )
+    }
 
     #[derive(Debug, Default)]
     struct FakeWriter {
@@ -550,6 +686,8 @@ mod tests {
             batch_size,
             channel_capacity: 10,
             resume_after_slot: None,
+            advance_finalized_watermark: false,
+            use_slot_resume: true,
         }
     }
 
@@ -670,6 +808,7 @@ mod tests {
             },
             &writer,
             &cursor_store,
+            &NoopSlotStateStore,
             "producer",
             config(2),
             |_| {},
@@ -1027,5 +1166,125 @@ mod tests {
             *writer.batch_sizes.lock().expect("batch sizes lock"),
             vec![1]
         );
+    }
+
+    #[tokio::test]
+    async fn finalized_watermark_advances_while_missing_slot_holds_it_back() {
+        let writer = FakeWriter::default();
+        let cursor_store = FakeCursorStore::default();
+        let slot_state_store = FakeSlotStateStore::default();
+        let config = PipelineConfig {
+            advance_finalized_watermark: true,
+            ..config(10)
+        };
+        let (sender, receiver) = mpsc::channel(10);
+
+        sender
+            .send(finalized_slot(10, 9))
+            .await
+            .expect("send slot 10");
+        sender
+            .send(finalized_slot(11, 10))
+            .await
+            .expect("send slot 11");
+        sender
+            .send(finalized_slot(13, 12))
+            .await
+            .expect("send slot 13");
+        drop(sender);
+
+        let summary = run_event_receiver_pipeline_with_progress_and_activity(
+            receiver,
+            &writer,
+            &cursor_store,
+            &slot_state_store,
+            "live",
+            config,
+            |_| {},
+            |_| {},
+        )
+        .await
+        .expect("pipeline should run");
+
+        assert_eq!(summary.last_persisted_slot, Some(13));
+        assert_eq!(summary.last_contiguous_finalized_slot, Some(11));
+        assert_eq!(summary.last_finalized_slot, Some(13));
+    }
+
+    #[tokio::test]
+    async fn replay_pipeline_does_not_track_finalized_watermark() {
+        let writer = FakeWriter::default();
+        let cursor_store = FakeCursorStore::default();
+        let events = [finalized_slot(10, 9), finalized_slot(11, 10)];
+
+        let summary = run_replay_pipeline(events, &writer, &cursor_store, "replay", config(10))
+            .await
+            .expect("pipeline should run");
+
+        assert_eq!(summary.last_persisted_slot, Some(11));
+        assert_eq!(summary.last_contiguous_finalized_slot, None);
+        assert_eq!(summary.last_finalized_slot, None);
+    }
+
+    #[tokio::test]
+    async fn replay_mode_skips_events_at_or_before_resume_slot() {
+        let writer = FakeWriter::default();
+        let cursor_store = FakeCursorStore::default();
+        let (sender, receiver) = mpsc::channel(3);
+        let config = PipelineConfig {
+            resume_after_slot: Some(2),
+            use_slot_resume: true,
+            ..config(2)
+        };
+
+        sender.send(event(1)).await.expect("send first event");
+        sender.send(event(2)).await.expect("send second event");
+        sender.send(event(3)).await.expect("send third event");
+        drop(sender);
+
+        let summary =
+            run_event_receiver_pipeline(receiver, &writer, &cursor_store, "receiver", config)
+                .await
+                .expect("pipeline should run");
+
+        assert_eq!(
+            *writer.batch_sizes.lock().expect("batch sizes lock"),
+            vec![1]
+        );
+        assert_eq!(summary.events_seen, 3);
+        assert_eq!(summary.events_skipped, 2);
+        assert_eq!(summary.write_summary.attempted, 1);
+        assert_eq!(summary.last_persisted_slot, Some(3));
+    }
+
+    #[tokio::test]
+    async fn live_mode_does_not_skip_same_slot_events_on_resume() {
+        let writer = FakeWriter::default();
+        let cursor_store = FakeCursorStore::default();
+        let (sender, receiver) = mpsc::channel(3);
+        let config = PipelineConfig {
+            resume_after_slot: Some(2),
+            use_slot_resume: false,
+            ..config(2)
+        };
+
+        sender.send(event(2)).await.expect("send first slot-2 event");
+        sender.send(event(2)).await.expect("send second slot-2 event");
+        sender.send(event(3)).await.expect("send slot-3 event");
+        drop(sender);
+
+        let summary =
+            run_event_receiver_pipeline(receiver, &writer, &cursor_store, "receiver", config)
+                .await
+                .expect("pipeline should run");
+
+        assert_eq!(
+            *writer.batch_sizes.lock().expect("batch sizes lock"),
+            vec![2, 1]
+        );
+        assert_eq!(summary.events_seen, 3);
+        assert_eq!(summary.events_skipped, 0);
+        assert_eq!(summary.write_summary.attempted, 3);
+        assert_eq!(summary.last_persisted_slot, Some(3));
     }
 }

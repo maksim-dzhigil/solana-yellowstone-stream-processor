@@ -1,6 +1,7 @@
 pub mod batcher;
 pub mod pipeline;
 pub mod replay;
+pub mod slot_state;
 pub mod source;
 pub mod yellowstone;
 #[cfg(feature = "yellowstone-live")]

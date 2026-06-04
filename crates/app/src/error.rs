@@ -1,12 +1,14 @@
 use crate::http::HttpError;
 use solana_yellowstone_storage::cursor::PostgresCursorError;
 use solana_yellowstone_storage::postgres::{PostgresInitError, PostgresWriteError};
+use solana_yellowstone_storage::slots::PostgresSlotStateError;
 use solana_yellowstone_stream::pipeline::PipelineError;
 #[cfg(feature = "yellowstone-live")]
 use solana_yellowstone_stream::pipeline::ProducerPipelineError;
 use solana_yellowstone_stream::replay::ReplayReadError;
 #[cfg(feature = "yellowstone-live")]
 use solana_yellowstone_stream::yellowstone_live::YellowstoneGrpcError;
+use std::convert::Infallible;
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -79,10 +81,11 @@ pub enum AppRunError {
     Replay(ReplayReadError),
     Postgres(PostgresInitError),
     Cursor(PostgresCursorError),
-    Pipeline(PipelineError<PostgresWriteError, PostgresCursorError>),
+    SlotState(PostgresSlotStateError),
+    Pipeline(PipelineError<PostgresWriteError, PostgresCursorError, PostgresSlotStateError>),
     #[cfg(feature = "yellowstone-live")]
     YellowstonePipeline(
-        ProducerPipelineError<PostgresWriteError, PostgresCursorError, YellowstoneGrpcError>,
+        ProducerPipelineError<PostgresWriteError, PostgresCursorError, PostgresSlotStateError, YellowstoneGrpcError>,
     ),
     Http(HttpError),
     #[cfg(not(feature = "yellowstone-live"))]
@@ -94,7 +97,7 @@ impl AppRunError {
         match self {
             Self::Replay(_) => 3,
             Self::Postgres(_) => 4,
-            Self::Cursor(_) | Self::Pipeline(_) => 5,
+            Self::Cursor(_) | Self::Pipeline(_) | Self::SlotState(_) => 5,
             #[cfg(feature = "yellowstone-live")]
             Self::YellowstonePipeline(_) => 5,
             Self::Http(_) => 6,
@@ -110,6 +113,7 @@ impl fmt::Display for AppRunError {
             Self::Replay(err) => write!(f, "replay error: {err}"),
             Self::Postgres(err) => write!(f, "postgres error: {err}"),
             Self::Cursor(err) => write!(f, "cursor error: {err}"),
+            Self::SlotState(err) => write!(f, "slot state error: {err}"),
             Self::Pipeline(err) => write!(f, "pipeline error: {err}"),
             #[cfg(feature = "yellowstone-live")]
             Self::YellowstonePipeline(err) => write!(f, "yellowstone pipeline error: {err}"),
@@ -128,6 +132,7 @@ impl std::error::Error for AppRunError {
             Self::Replay(err) => Some(err),
             Self::Postgres(err) => Some(err),
             Self::Cursor(err) => Some(err),
+            Self::SlotState(err) => Some(err),
             Self::Pipeline(err) => Some(err),
             #[cfg(feature = "yellowstone-live")]
             Self::YellowstonePipeline(err) => Some(err),
@@ -156,18 +161,35 @@ impl From<PostgresCursorError> for AppRunError {
     }
 }
 
-impl From<PipelineError<PostgresWriteError, PostgresCursorError>> for AppRunError {
-    fn from(err: PipelineError<PostgresWriteError, PostgresCursorError>) -> Self {
+impl From<PostgresSlotStateError> for AppRunError {
+    fn from(err: PostgresSlotStateError) -> Self {
+        Self::SlotState(err)
+    }
+}
+
+impl From<PipelineError<PostgresWriteError, PostgresCursorError, PostgresSlotStateError>> for AppRunError {
+    fn from(err: PipelineError<PostgresWriteError, PostgresCursorError, PostgresSlotStateError>) -> Self {
         Self::Pipeline(err)
     }
 }
 
+impl From<PipelineError<PostgresWriteError, PostgresCursorError, Infallible>> for AppRunError {
+    fn from(err: PipelineError<PostgresWriteError, PostgresCursorError, Infallible>) -> Self {
+        match err {
+            PipelineError::Write(e) => Self::Pipeline(PipelineError::Write(e)),
+            PipelineError::Cursor(e) => Self::Pipeline(PipelineError::Cursor(e)),
+            PipelineError::SlotState(i) => match i {},
+            PipelineError::ProducerJoin(e) => Self::Pipeline(PipelineError::ProducerJoin(e)),
+        }
+    }
+}
+
 #[cfg(feature = "yellowstone-live")]
-impl From<ProducerPipelineError<PostgresWriteError, PostgresCursorError, YellowstoneGrpcError>>
+impl From<ProducerPipelineError<PostgresWriteError, PostgresCursorError, PostgresSlotStateError, YellowstoneGrpcError>>
     for AppRunError
 {
     fn from(
-        err: ProducerPipelineError<PostgresWriteError, PostgresCursorError, YellowstoneGrpcError>,
+        err: ProducerPipelineError<PostgresWriteError, PostgresCursorError, PostgresSlotStateError, YellowstoneGrpcError>,
     ) -> Self {
         Self::YellowstonePipeline(err)
     }

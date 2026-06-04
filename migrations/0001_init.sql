@@ -23,6 +23,8 @@ CREATE INDEX IF NOT EXISTS idx_events_identity_gin ON events USING GIN(identity)
 CREATE TABLE IF NOT EXISTS stream_cursors (
     stream_name TEXT PRIMARY KEY,
     last_persisted_slot BIGINT NOT NULL DEFAULT 0,
+    last_contiguous_finalized_slot BIGINT,
+    last_finalized_slot BIGINT,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb
 );
@@ -35,3 +37,21 @@ CREATE TABLE IF NOT EXISTS ingestion_runs (
     git_sha TEXT,
     config_hash TEXT
 );
+
+CREATE TABLE IF NOT EXISTS stream_slots (
+    stream_name   TEXT NOT NULL,
+    slot          BIGINT NOT NULL,
+    parent_slot   BIGINT,
+    finalized     BOOLEAN NOT NULL DEFAULT FALSE,
+    dead          BOOLEAN NOT NULL DEFAULT FALSE,
+    first_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (stream_name, slot)
+);
+
+CREATE INDEX IF NOT EXISTS idx_stream_slots_finalized
+    ON stream_slots(stream_name, slot)
+    WHERE finalized;
+
+CREATE INDEX IF NOT EXISTS idx_stream_slots_parent
+    ON stream_slots(stream_name, parent_slot)
+    WHERE finalized;

@@ -7,6 +7,8 @@ use solana_yellowstone_storage::{
     CursorStore, cursor::PostgresCursorStore, postgres::PostgresEventWriter,
 };
 #[cfg(feature = "yellowstone-live")]
+use solana_yellowstone_storage::slots::{PostgresSlotStateStore, SlotStateStore};
+#[cfg(feature = "yellowstone-live")]
 use solana_yellowstone_stream::pipeline::PipelineSummary;
 #[cfg(feature = "yellowstone-live")]
 use solana_yellowstone_stream::pipeline::run_event_producer_pipeline_with_progress_and_activity;
@@ -67,6 +69,8 @@ async fn run_replay(config: Config) -> Result<(), AppRunError> {
         batch_size: config.batch_size,
         channel_capacity: config.channel_capacity,
         resume_after_slot,
+        advance_finalized_watermark: false,
+        use_slot_resume: true,
     };
     info!(
         stream_name = %config.stream_name,
@@ -134,6 +138,11 @@ async fn run_yellowstone(config: Config) -> Result<(), AppRunError> {
     let cursor = cursor_store.get_cursor(&config.stream_name).await?;
     let resume_after_slot = cursor.as_ref().map(|cursor| cursor.last_persisted_slot);
 
+    let slot_state_store = PostgresSlotStateStore::from_pool(writer.pool().clone());
+    let frontier = slot_state_store
+        .get_finalized_frontier(&config.stream_name)
+        .await?;
+
     if let Some(slot) = resume_after_slot {
         info!(
             stream_name = %config.stream_name,
@@ -142,6 +151,21 @@ async fn run_yellowstone(config: Config) -> Result<(), AppRunError> {
         );
     } else {
         info!(stream_name = %config.stream_name, "stream cursor not found");
+    }
+
+    if let Some(slot) = frontier.last_contiguous_finalized_slot {
+        info!(
+            stream_name = %config.stream_name,
+            last_contiguous_finalized_slot = slot,
+            "loaded contiguous finalized frontier"
+        );
+    }
+    if let Some(slot) = frontier.last_finalized_slot {
+        info!(
+            stream_name = %config.stream_name,
+            last_finalized_slot = slot,
+            "loaded finalized head"
+        );
     }
 
     let yellowstone_reconnect_config = YellowstoneReconnectConfig {
@@ -158,7 +182,7 @@ async fn run_yellowstone(config: Config) -> Result<(), AppRunError> {
         config.yellowstone_cluster.clone(),
     );
     yellowstone_config.x_token = config.yellowstone_x_token.clone();
-    yellowstone_config.from_slot = resume_after_slot;
+    yellowstone_config.from_slot = frontier.last_contiguous_finalized_slot;
     yellowstone_config.filter_name = config.stream_name.clone();
     yellowstone_config.subscribe_slots = config.yellowstone_subscriptions.slots;
     yellowstone_config.subscribe_transactions = config.yellowstone_subscriptions.transactions;
@@ -171,23 +195,31 @@ async fn run_yellowstone(config: Config) -> Result<(), AppRunError> {
     yellowstone_config.transaction_account_required =
         config.yellowstone_transaction_account_required.clone();
 
-    let latest_persisted_slot = Arc::new(AtomicU64::new(encode_slot(resume_after_slot)));
+    let last_contiguous_finalized_slot = Arc::new(AtomicU64::new(encode_slot(
+        frontier.last_contiguous_finalized_slot,
+    )));
 
     let pipeline_config = PipelineConfig {
         batch_size: config.batch_size,
         channel_capacity: config.channel_capacity,
         resume_after_slot,
+        advance_finalized_watermark: true,
+        use_slot_resume: false,
     };
     info!(
         stream_name = %config.stream_name,
         batch_size = config.batch_size,
         channel_capacity = config.channel_capacity,
         resume_after_slot = ?pipeline_config.resume_after_slot,
+        advance_finalized_watermark = pipeline_config.advance_finalized_watermark,
+        use_slot_resume = pipeline_config.use_slot_resume,
         "running yellowstone pipeline"
     );
 
     let initial_summary = PipelineSummary {
         last_persisted_slot: resume_after_slot,
+        last_contiguous_finalized_slot: frontier.last_contiguous_finalized_slot,
+        last_finalized_slot: frontier.last_finalized_slot,
         ..PipelineSummary::default()
     };
     let initial_status = StatusSnapshot::from_pipeline_mode(
@@ -207,8 +239,8 @@ async fn run_yellowstone(config: Config) -> Result<(), AppRunError> {
     let reconnect_status_sender = status_sender.clone();
     let pipeline_status_sender = status_sender.clone();
     let activity_status_sender = status_sender.clone();
-    let producer_latest_persisted_slot = latest_persisted_slot.clone();
-    let progress_latest_persisted_slot = latest_persisted_slot.clone();
+    let producer_last_contiguous_slot = last_contiguous_finalized_slot.clone();
+    let progress_last_contiguous_slot = last_contiguous_finalized_slot.clone();
     let mut last_batches_written = 0;
     let mut last_activity_status_sent = None::<Instant>;
     let pipeline = run_event_producer_pipeline_with_progress_and_activity(
@@ -237,12 +269,13 @@ async fn run_yellowstone(config: Config) -> Result<(), AppRunError> {
                 },
                 move |attempt_config| {
                     attempt_config.from_slot =
-                        decode_slot(producer_latest_persisted_slot.load(Ordering::Relaxed));
+                        decode_slot(producer_last_contiguous_slot.load(Ordering::Relaxed));
                 },
             )
         },
         &writer,
         &cursor_store,
+        &slot_state_store,
         &config.stream_name,
         pipeline_config,
         move |summary| {
@@ -254,8 +287,8 @@ async fn run_yellowstone(config: Config) -> Result<(), AppRunError> {
                 .running();
             if summary.batches_written > last_batches_written {
                 live = live.with_batch_persisted_at(http::current_unix_ms());
-                if let Some(slot) = summary.last_persisted_slot {
-                    progress_latest_persisted_slot
+                if let Some(slot) = summary.last_contiguous_finalized_slot {
+                    progress_last_contiguous_slot
                         .store(encode_slot(Some(slot)), Ordering::Relaxed);
                 }
                 last_batches_written = summary.batches_written;
