@@ -97,9 +97,8 @@ fn main() -> io::Result<()> {
     }
 
     for event in events {
-        let line = serde_json::to_string(&event).map_err(|e| {
-            io::Error::new(io::ErrorKind::InvalidData, e)
-        })?;
+        let line = serde_json::to_string(&event)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         writer.write_all(line.as_bytes())?;
         writer.write_all(b"\n")?;
     }

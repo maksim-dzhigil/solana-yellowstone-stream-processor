@@ -1276,8 +1276,14 @@ mod tests {
             ..config(2)
         };
 
-        sender.send(event(2)).await.expect("send first slot-2 event");
-        sender.send(event(2)).await.expect("send second slot-2 event");
+        sender
+            .send(event(2))
+            .await
+            .expect("send first slot-2 event");
+        sender
+            .send(event(2))
+            .await
+            .expect("send second slot-2 event");
         sender.send(event(3)).await.expect("send slot-3 event");
         drop(sender);
 

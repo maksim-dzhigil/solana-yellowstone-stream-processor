@@ -175,7 +175,10 @@ impl fmt::Debug for Config {
             )
             .field(
                 "yellowstone_reconnect_reset_after_ms",
-                &self.yellowstone_reconnect.reset_after.map(|d| d.as_millis()),
+                &self
+                    .yellowstone_reconnect
+                    .reset_after
+                    .map(|d| d.as_millis()),
             )
             .finish()
     }
@@ -505,11 +508,8 @@ fn env_yellowstone_reconnect_settings(
     let max_delay_ms =
         env_positive_u64_or_default(source, "YELLOWSTONE_RECONNECT_MAX_DELAY_MS", 30_000)?;
     let max_retries = env_reconnect_max_retries(source)?;
-    let reset_after_ms = env_positive_u64_or_default(
-        source,
-        "YELLOWSTONE_RECONNECT_RESET_AFTER_MS",
-        30_000,
-    )?;
+    let reset_after_ms =
+        env_positive_u64_or_default(source, "YELLOWSTONE_RECONNECT_RESET_AFTER_MS", 30_000)?;
     let settings = YellowstoneReconnectSettings::from_ms(
         initial_delay_ms,
         max_delay_ms,
@@ -533,17 +533,6 @@ fn env_positive_u64_or_default(
 ) -> Result<u64, ConfigError> {
     let raw = env_or_default(source, key, &default.to_string())?;
     parse_positive_u64(key, &raw)
-}
-
-fn env_optional_positive_u64(
-    source: &impl ConfigSource,
-    key: &'static str,
-) -> Result<Option<u64>, ConfigError> {
-    match source.get(key)? {
-        Some(value) if value.trim().is_empty() => Err(ConfigError::Empty { key }),
-        Some(value) => Ok(Some(parse_positive_u64(key, &value)?)),
-        None => Ok(None),
-    }
 }
 
 fn env_reconnect_max_retries(source: &impl ConfigSource) -> Result<Option<u32>, ConfigError> {

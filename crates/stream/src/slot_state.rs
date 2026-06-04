@@ -1,4 +1,3 @@
-
 use serde_json::Value;
 use solana_yellowstone_domain::event::{EventIdentity, NormalizedEvent, SlotStatus};
 use solana_yellowstone_storage::slots::SlotStateUpdate;

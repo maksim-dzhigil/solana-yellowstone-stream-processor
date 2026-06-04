@@ -1,4 +1,3 @@
-
 use async_trait::async_trait;
 use sqlx::{PgPool, Postgres, QueryBuilder};
 use std::collections::HashMap;
@@ -396,7 +395,12 @@ mod tests {
 
     #[test]
     fn missing_finalized_link_holds_watermark() {
-        let finalized = map(&[(10, Some(9)), (11, Some(10)), (13, Some(12)), (14, Some(13))]);
+        let finalized = map(&[
+            (10, Some(9)),
+            (11, Some(10)),
+            (13, Some(12)),
+            (14, Some(13)),
+        ]);
 
         assert_eq!(advance(Some(10), &finalized), Some(11));
     }

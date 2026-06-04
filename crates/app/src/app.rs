@@ -3,11 +3,11 @@ use crate::error::AppRunError;
 use crate::http::{self, StatusSnapshot};
 #[cfg(feature = "yellowstone-live")]
 use crate::http::{LiveProducerStatus, StreamMode};
+#[cfg(feature = "yellowstone-live")]
+use solana_yellowstone_storage::slots::{PostgresSlotStateStore, SlotStateStore};
 use solana_yellowstone_storage::{
     CursorStore, cursor::PostgresCursorStore, postgres::PostgresEventWriter,
 };
-#[cfg(feature = "yellowstone-live")]
-use solana_yellowstone_storage::slots::{PostgresSlotStateStore, SlotStateStore};
 #[cfg(feature = "yellowstone-live")]
 use solana_yellowstone_stream::pipeline::PipelineSummary;
 #[cfg(feature = "yellowstone-live")]
@@ -295,8 +295,7 @@ async fn run_yellowstone(config: Config) -> Result<(), AppRunError> {
             if summary.batches_written > last_batches_written {
                 live = live.with_batch_persisted_at(http::current_unix_ms());
                 if let Some(slot) = summary.last_contiguous_finalized_slot {
-                    progress_last_contiguous_slot
-                        .store(encode_slot(Some(slot)), Ordering::Relaxed);
+                    progress_last_contiguous_slot.store(encode_slot(Some(slot)), Ordering::Relaxed);
                 }
                 last_batches_written = summary.batches_written;
             }

@@ -85,7 +85,12 @@ pub enum AppRunError {
     Pipeline(PipelineError<PostgresWriteError, PostgresCursorError, PostgresSlotStateError>),
     #[cfg(feature = "yellowstone-live")]
     YellowstonePipeline(
-        ProducerPipelineError<PostgresWriteError, PostgresCursorError, PostgresSlotStateError, YellowstoneGrpcError>,
+        ProducerPipelineError<
+            PostgresWriteError,
+            PostgresCursorError,
+            PostgresSlotStateError,
+            YellowstoneGrpcError,
+        >,
     ),
     Http(HttpError),
     #[cfg(not(feature = "yellowstone-live"))]
@@ -167,8 +172,12 @@ impl From<PostgresSlotStateError> for AppRunError {
     }
 }
 
-impl From<PipelineError<PostgresWriteError, PostgresCursorError, PostgresSlotStateError>> for AppRunError {
-    fn from(err: PipelineError<PostgresWriteError, PostgresCursorError, PostgresSlotStateError>) -> Self {
+impl From<PipelineError<PostgresWriteError, PostgresCursorError, PostgresSlotStateError>>
+    for AppRunError
+{
+    fn from(
+        err: PipelineError<PostgresWriteError, PostgresCursorError, PostgresSlotStateError>,
+    ) -> Self {
         Self::Pipeline(err)
     }
 }
@@ -185,11 +194,23 @@ impl From<PipelineError<PostgresWriteError, PostgresCursorError, Infallible>> fo
 }
 
 #[cfg(feature = "yellowstone-live")]
-impl From<ProducerPipelineError<PostgresWriteError, PostgresCursorError, PostgresSlotStateError, YellowstoneGrpcError>>
-    for AppRunError
+impl
+    From<
+        ProducerPipelineError<
+            PostgresWriteError,
+            PostgresCursorError,
+            PostgresSlotStateError,
+            YellowstoneGrpcError,
+        >,
+    > for AppRunError
 {
     fn from(
-        err: ProducerPipelineError<PostgresWriteError, PostgresCursorError, PostgresSlotStateError, YellowstoneGrpcError>,
+        err: ProducerPipelineError<
+            PostgresWriteError,
+            PostgresCursorError,
+            PostgresSlotStateError,
+            YellowstoneGrpcError,
+        >,
     ) -> Self {
         Self::YellowstonePipeline(err)
     }

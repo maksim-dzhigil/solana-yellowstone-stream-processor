@@ -903,9 +903,18 @@ mod tests {
         assert_eq!(observed.len(), 2);
         // First failure: retry_attempt = 1, delay increased from initial 1ms
         assert_eq!(observed[0].0, 1);
-        assert!(observed[0].1 > 1, "delay should increase after first failure");
+        assert!(
+            observed[0].1 > 1,
+            "delay should increase after first failure"
+        );
         // Second failure streamed for 50ms (> 30ms grace) -> backoff reset
-        assert_eq!(observed[1].0, 0, "retry_attempt should reset after grace period");
-        assert_eq!(observed[1].1, 1, "delay should reset to initial after grace period");
+        assert_eq!(
+            observed[1].0, 0,
+            "retry_attempt should reset after grace period"
+        );
+        assert_eq!(
+            observed[1].1, 1,
+            "delay should reset to initial after grace period"
+        );
     }
 }
