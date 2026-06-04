@@ -2070,6 +2070,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "bs58",
+ "fastrand",
  "serde_json",
  "solana-yellowstone-domain",
  "solana-yellowstone-storage",

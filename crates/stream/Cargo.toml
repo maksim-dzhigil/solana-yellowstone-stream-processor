@@ -24,6 +24,7 @@ solana-yellowstone-domain = { path = "../domain" }
 tokio = { version = "1", features = ["rt", "sync", "time"] }
 tokio-stream = { version = "0.1", optional = true }
 solana-yellowstone-storage = { path = "../storage" }
+fastrand = "2"
 
 [lints]
 workspace = true

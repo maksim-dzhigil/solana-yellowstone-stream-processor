@@ -371,7 +371,9 @@ where
 }
 
 fn next_backoff_delay(current: Duration, max_delay: Duration) -> Duration {
-    current.saturating_mul(2).min(max_delay)
+    let base = current.saturating_mul(2);
+    let jitter = Duration::from_millis(fastrand::u64(0..=current.as_millis() as u64));
+    base.saturating_add(jitter).min(max_delay)
 }
 
 pub async fn run_yellowstone_grpc_producer(
@@ -801,5 +803,41 @@ mod tests {
         .expect("reconnect loop should eventually succeed after stream closes");
 
         assert_eq!(*attempts.lock().expect("attempts lock"), 3);
+    }
+
+    #[test]
+    fn backoff_jitter_is_capped_by_max_delay() {
+        // 20s * 2 + up to 20s jitter = up to 60s, but capped at 30s max
+        let result = super::next_backoff_delay(
+            std::time::Duration::from_secs(20),
+            std::time::Duration::from_secs(30),
+        );
+        assert_eq!(result, std::time::Duration::from_secs(30));
+    }
+
+    #[test]
+    fn backoff_jitter_adds_randomization_within_bounds() {
+        // 1s * 2 + [0, 1s] jitter => result in [2s, 3s]
+        let result = super::next_backoff_delay(
+            std::time::Duration::from_secs(1),
+            std::time::Duration::from_secs(30),
+        );
+        assert!(result >= std::time::Duration::from_secs(2));
+        assert!(result <= std::time::Duration::from_secs(3));
+    }
+
+    #[test]
+    fn backoff_jitter_produces_variation() {
+        let mut distinct = std::collections::HashSet::new();
+        for _ in 0..100 {
+            distinct.insert(super::next_backoff_delay(
+                std::time::Duration::from_millis(100),
+                std::time::Duration::from_secs(30),
+            ));
+        }
+        assert!(
+            distinct.len() > 1,
+            "jitter should produce more than one distinct delay over 100 runs"
+        );
     }
 }
