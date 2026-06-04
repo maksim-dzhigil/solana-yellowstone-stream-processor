@@ -624,6 +624,7 @@ mod tests {
             last_persisted_slot: Some(42),
             last_contiguous_finalized_slot: None,
             last_finalized_slot: None,
+            ..Default::default()
         };
 
         let status = StatusSnapshot::from_pipeline("replay", summary);
@@ -653,6 +654,7 @@ mod tests {
             last_persisted_slot: Some(42),
             last_contiguous_finalized_slot: None,
             last_finalized_slot: None,
+            ..Default::default()
         };
         let status = StatusSnapshot::from_pipeline("replay", summary);
 
@@ -678,6 +680,7 @@ mod tests {
             last_persisted_slot: Some(40),
             last_contiguous_finalized_slot: None,
             last_finalized_slot: None,
+            ..Default::default()
         };
         let live = super::LiveProducerStatus::default()
             .with_reconnecting(
@@ -722,6 +725,7 @@ mod tests {
             last_persisted_slot: None,
             last_contiguous_finalized_slot: None,
             last_finalized_slot: None,
+            ..Default::default()
         };
         let status = StatusSnapshot::from_pipeline("replay", summary);
 
@@ -781,6 +785,7 @@ mod tests {
             last_persisted_slot: Some(10),
             last_contiguous_finalized_slot: None,
             last_finalized_slot: None,
+            ..Default::default()
         };
         let status = StatusSnapshot::from_pipeline_mode(
             super::StreamMode::Yellowstone,
@@ -910,6 +915,7 @@ mod tests {
                 last_persisted_slot: None,
                 last_contiguous_finalized_slot: None,
                 last_finalized_slot: None,
+                ..Default::default()
             },
         )
     }
@@ -927,8 +933,9 @@ mod tests {
                     deduplicated: 1,
                 },
                 last_persisted_slot: Some(42),
-            last_contiguous_finalized_slot: None,
-            last_finalized_slot: None,
+                last_contiguous_finalized_slot: None,
+                last_finalized_slot: None,
+                ..Default::default()
             },
         )
     }
@@ -990,6 +997,7 @@ mod tests {
             last_persisted_slot: None,
             last_contiguous_finalized_slot: None,
             last_finalized_slot: None,
+            ..Default::default()
         };
         let status = StatusSnapshot::from_pipeline("replay\\test\nmainnet\"", summary);
 

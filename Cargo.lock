@@ -2087,6 +2087,7 @@ dependencies = [
  "assert_cmd",
  "axum",
  "clap",
+ "fastrand",
  "predicates",
  "serde",
  "serde_json",

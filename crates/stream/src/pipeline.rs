@@ -38,6 +38,8 @@ pub struct PipelineSummary {
     pub last_persisted_slot: Option<u64>,
     pub last_contiguous_finalized_slot: Option<u64>,
     pub last_finalized_slot: Option<u64>,
+    pub total_batch_write_duration: std::time::Duration,
+    pub max_batch_write_duration: std::time::Duration,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -442,10 +444,16 @@ where
 {
     let last_slot = batch.iter().map(|event| event.slot()).max();
 
+    let batch_start = std::time::Instant::now();
     let write_summary = writer
         .write_batch(batch)
         .await
         .map_err(PipelineError::Write)?;
+    let batch_duration = batch_start.elapsed();
+    summary.total_batch_write_duration += batch_duration;
+    if batch_duration > summary.max_batch_write_duration {
+        summary.max_batch_write_duration = batch_duration;
+    }
 
     if let Some(slot) = last_slot {
         cursor_store

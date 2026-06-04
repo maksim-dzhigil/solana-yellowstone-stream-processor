@@ -9,16 +9,26 @@ publish = false
 [features]
 yellowstone-live = ["solana-yellowstone-stream/yellowstone-live"]
 
+[[bin]]
+name = "solana-yellowstone-stream-processor"
+path = "src/main.rs"
+
+[[bin]]
+name = "generate-fixture"
+path = "src/bin/generate_fixture.rs"
+
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 axum = "0.8"
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 solana-yellowstone-domain = { path = "../domain" }
 solana-yellowstone-storage = { path = "../storage" }
 solana-yellowstone-stream = { path = "../stream" }
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+fastrand = "2"
 
 [lints]
 workspace = true

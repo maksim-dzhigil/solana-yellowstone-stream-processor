@@ -2,7 +2,7 @@ SHELL := /bin/sh
 
 TEST_DATABASE_URL ?= postgres://postgres:postgres@localhost:5433/solana_stream
 
-.PHONY: fmt fmt-check test test-postgres clippy check verify build run compose-up compose-down
+.PHONY: fmt fmt-check test test-postgres clippy check verify build run compose-up compose-down bench-generate bench-replay
 
 fmt:
 	cargo fmt --all
@@ -34,3 +34,18 @@ compose-up:
 
 compose-down:
 	docker compose down
+
+FIXTURE_OUTPUT ?= fixtures/bench_1M.jsonl
+FIXTURE_COUNT ?= 1000000
+BENCH_DB_URL ?= postgres://postgres:postgres@localhost:5433/solana_stream
+
+bench-generate:
+	cargo run -p solana-yellowstone-stream-processor --bin generate_fixture -- \
+		--count $(FIXTURE_COUNT) \
+		--output $(FIXTURE_OUTPUT)
+
+bench-replay:
+	DATABASE_URL='$(BENCH_DB_URL)' cargo run -p solana-yellowstone-stream-processor --release -- \
+		--mode replay --source $(FIXTURE_OUTPUT)
+
+bench: bench-generate bench-replay

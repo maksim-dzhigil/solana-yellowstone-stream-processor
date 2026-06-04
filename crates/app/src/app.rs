@@ -96,6 +96,8 @@ async fn run_replay(config: Config) -> Result<(), AppRunError> {
         events_attempted = summary.write_summary.attempted,
         events_inserted = summary.write_summary.inserted,
         events_deduplicated = summary.write_summary.deduplicated,
+        avg_batch_write_ms = summary.total_batch_write_duration.as_millis() as f64 / summary.batches_written.max(1) as f64,
+        max_batch_write_ms = summary.max_batch_write_duration.as_millis(),
         last_persisted_slot = ?summary.last_persisted_slot,
         "replay pipeline completed"
     );
@@ -356,6 +358,8 @@ async fn run_yellowstone(config: Config) -> Result<(), AppRunError> {
                 events_attempted = summary.write_summary.attempted,
                 events_inserted = summary.write_summary.inserted,
                 events_deduplicated = summary.write_summary.deduplicated,
+                avg_batch_write_ms = summary.total_batch_write_duration.as_millis() as f64 / summary.batches_written.max(1) as f64,
+                max_batch_write_ms = summary.max_batch_write_duration.as_millis(),
                 last_persisted_slot = ?summary.last_persisted_slot,
                 "yellowstone pipeline completed"
             );
