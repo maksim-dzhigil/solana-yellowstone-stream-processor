@@ -61,6 +61,7 @@ pub enum YellowstoneGrpcErrorKind {
     Receive,
     Normalize,
     ReceiverClosed,
+    StreamClosed,
 }
 
 impl YellowstoneGrpcErrorKind {
@@ -73,6 +74,7 @@ impl YellowstoneGrpcErrorKind {
             Self::Receive => "receive",
             Self::Normalize => "normalize",
             Self::ReceiverClosed => "receiver_closed",
+            Self::StreamClosed => "stream_closed",
         }
     }
 }
@@ -405,7 +407,7 @@ pub async fn run_yellowstone_grpc_producer(
         }
     }
 
-    Ok(())
+    Err(YellowstoneGrpcError::StreamClosed)
 }
 
 #[derive(Debug)]
@@ -417,6 +419,7 @@ pub enum YellowstoneGrpcError {
     Receive(tonic::Status),
     Normalize(YellowstoneProtoNormalizeError),
     ReceiverClosed,
+    StreamClosed,
 }
 
 impl fmt::Display for YellowstoneGrpcError {
@@ -439,6 +442,7 @@ impl fmt::Display for YellowstoneGrpcError {
             ),
             Self::Normalize(err) => write!(f, "yellowstone update normalization failed: {err}"),
             Self::ReceiverClosed => f.write_str("yellowstone event receiver closed"),
+            Self::StreamClosed => f.write_str("yellowstone stream closed by server"),
         }
     }
 }
@@ -453,6 +457,7 @@ impl YellowstoneGrpcError {
             Self::Receive(_) => YellowstoneGrpcErrorKind::Receive,
             Self::Normalize(_) => YellowstoneGrpcErrorKind::Normalize,
             Self::ReceiverClosed => YellowstoneGrpcErrorKind::ReceiverClosed,
+            Self::StreamClosed => YellowstoneGrpcErrorKind::StreamClosed,
         }
     }
 
@@ -469,6 +474,7 @@ impl YellowstoneGrpcError {
             | Self::InvalidMetadataValue(_)
             | Self::Normalize(_)
             | Self::ReceiverClosed => false,
+            Self::StreamClosed => true,
         }
     }
 }
@@ -476,7 +482,7 @@ impl YellowstoneGrpcError {
 impl std::error::Error for YellowstoneGrpcError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::InvalidConfig { .. } | Self::ReceiverClosed => None,
+            Self::InvalidConfig { .. } | Self::ReceiverClosed | Self::StreamClosed => None,
             Self::InvalidMetadataValue(err) => Some(err),
             Self::Connect(err) => Some(err),
             Self::Subscribe(err) | Self::Receive(err) => Some(err),
@@ -741,5 +747,46 @@ mod tests {
 
         assert!(matches!(err, YellowstoneGrpcError::InvalidConfig { .. }));
         assert_eq!(err.to_string(), "yellowstone endpoint must not be empty");
+    }
+
+    #[test]
+    fn stream_closed_is_retryable() {
+        let err = YellowstoneGrpcError::StreamClosed;
+        assert!(err.is_retryable());
+        assert_eq!(err.kind().as_str(), "stream_closed");
+        assert_eq!(err.to_string(), "yellowstone stream closed by server");
+    }
+
+    #[tokio::test]
+    async fn reconnect_loop_retries_on_stream_closed() {
+        let attempts = Arc::new(Mutex::new(0_u32));
+        let attempts_for_callback = attempts.clone();
+
+        super::run_yellowstone_reconnect_loop(
+            YellowstoneGrpcConfig::slots_only("https://provider.example", "mainnet-beta"),
+            YellowstoneReconnectConfig {
+                initial_delay: Duration::from_millis(1),
+                max_delay: Duration::from_millis(1),
+                max_retries: Some(2),
+            },
+            move |_config| {
+                let attempts = attempts_for_callback.clone();
+                async move {
+                    let mut count = attempts.lock().expect("attempts lock");
+                    *count += 1;
+                    if *count < 3 {
+                        Err(YellowstoneGrpcError::StreamClosed)
+                    } else {
+                        Ok(())
+                    }
+                }
+            },
+            |_| {},
+            |_| {},
+        )
+        .await
+        .expect("reconnect loop should eventually succeed after stream closes");
+
+        assert_eq!(*attempts.lock().expect("attempts lock"), 3);
     }
 }
