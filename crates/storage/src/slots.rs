@@ -355,10 +355,7 @@ pub fn advance(anchor: Option<u64>, finalized: &FinalizedMap) -> Option<u64> {
     };
 
     let mut head = seed;
-    loop {
-        let Some(next) = children.get(&head) else {
-            break;
-        };
+    while let Some(next) = children.get(&head) {
         let Some(&child) = next.iter().min() else {
             break;
         };
