@@ -1,3 +1,17 @@
+## 2026-06-04
+
+**Live mode correctness and reliability hardening.**
+
+- **Contiguous finalized cursor for safe reconnect.** Previously the live reconnect used `last_persisted_slot` — the maximum slot seen in any successfully written batch. This was dangerous because a slot contains many events (transactions, instructions, account updates, different commitment levels). If the process crashed after persisting only some events from slot N, the cursor already pointed to N, and on restart all remaining events from the same slot were skipped, causing guaranteed data loss at every restart boundary. Changed the live pipeline to use `last_contiguous_finalized_slot` computed by `PostgresSlotStateStore` via a recursive SQL walk over finalized slot ancestry. Reconnect now requests replay starting from the last fully contiguous finalized slot, and deduplication is handled exclusively by stable `event_id` with `ON CONFLICT DO NOTHING` at the storage layer. Replay mode keeps slot-based resume; live mode disables it.
+
+- **Server-side stream close no longer exits silently.** When the Yellowstone provider closed the gRPC stream (idle timeout, load balancer reset, graceful shutdown), the producer returned `Ok(())`, which the reconnect loop treated as successful completion. The entire pipeline stopped, the process exited with code 0, and no reconnect was attempted. Added `YellowstoneGrpcError::StreamClosed`, returned when the message stream ends. This error is classified as retryable, so the reconnect loop properly backs off and attempts reconnect instead of shutting down.
+
+- **Malformed protobuf updates no longer kill ingestion.** A single bad protobuf update from the provider caused `normalize_yellowstone_proto_update` to fail with a `Normalize` error, which was non-retryable and propagated up, tearing down the entire ingestion loop permanently. Changed the producer to catch normalization errors, log a `warn`, increment a `decode_errors_total` counter, skip the bad update, and continue reading the stream. The counter is exposed in `LiveProducerStatus` and rendered as Prometheus metric `solana_stream_decode_errors_total`.
+
+- **Jitter added to exponential reconnect backoff.** The backoff used pure `delay * 2` without randomization. During a provider-wide outage all clients with the same reconnect profile would retry in lockstep, creating a thundering herd. Added capped jitter: `delay * 2 + rand(0, delay)`, bounded by `max_delay`. Load is now spread across a randomized window.
+
+- **Backoff resets after a healthy streaming period.** `retry_attempt` and `delay` accumulated forever across the reconnect loop lifetime. A connection that flapped (streamed for a while, dropped, reconnected, streamed again) eventually exhausted `max_retries` or stuck at `max_delay`, aborting a basically-working stream. Added a configurable grace period `reset_after` (default 30s, env `YELLOWSTONE_RECONNECT_RESET_AFTER_MS`). If an attempt streams for longer than the grace period before failing, `retry_attempt` resets to 0 and `delay` resets to `initial_delay` for the next reconnect. Normal exponential backoff with jitter still applies for quick failures.
+
 ## 2026-06-01
 
 - Advanced Yellowstone live mode from configurable ingestion to an operationally observable runtime: provider-side filters, concurrent HTTP status endpoints, coordinated shutdown, reconnect backoff, retry tuning, and safe reconnect error summaries.
