@@ -454,6 +454,14 @@ where
     if batch_duration > summary.max_batch_write_duration {
         summary.max_batch_write_duration = batch_duration;
     }
+    summary.events_skipped += write_summary.skipped;
+    if write_summary.skipped > 0 {
+        tracing::warn!(
+            skipped = write_summary.skipped,
+            batch_size = batch.len(),
+            "batch contained events that could not be converted to storage rows"
+        );
+    }
 
     if let Some(slot) = last_slot {
         cursor_store
@@ -595,6 +603,7 @@ mod tests {
                 attempted: events.len(),
                 inserted: events.len(),
                 deduplicated: 0,
+                skipped: 0,
             })
         }
     }
@@ -727,6 +736,7 @@ mod tests {
         assert_eq!(summary.write_summary.attempted, 5);
         assert_eq!(summary.write_summary.inserted, 5);
         assert_eq!(summary.write_summary.deduplicated, 0);
+        assert_eq!(summary.write_summary.skipped, 0);
         assert_eq!(summary.last_persisted_slot, Some(5));
     }
 
@@ -915,6 +925,7 @@ mod tests {
         assert_eq!(summary.events_seen, 1);
         assert_eq!(summary.batches_written, 1);
         assert_eq!(summary.write_summary.attempted, 1);
+        assert_eq!(summary.write_summary.skipped, 0);
         assert_eq!(summary.last_persisted_slot, Some(1));
     }
 
@@ -945,6 +956,7 @@ mod tests {
         assert_eq!(summary.events_seen, 3);
         assert_eq!(summary.events_skipped, 2);
         assert_eq!(summary.write_summary.attempted, 1);
+        assert_eq!(summary.write_summary.skipped, 0);
         assert_eq!(summary.last_persisted_slot, Some(3));
     }
 
@@ -1072,6 +1084,7 @@ mod tests {
         assert_eq!(summary.events_skipped, 2);
         assert_eq!(summary.batches_written, 2);
         assert_eq!(summary.write_summary.attempted, 3);
+        assert_eq!(summary.write_summary.skipped, 0);
         assert_eq!(summary.last_persisted_slot, Some(5));
     }
 
@@ -1107,6 +1120,7 @@ mod tests {
         assert_eq!(summary.events_skipped, 2);
         assert_eq!(summary.batches_written, 0);
         assert_eq!(summary.write_summary.attempted, 0);
+        assert_eq!(summary.write_summary.skipped, 0);
         assert_eq!(summary.last_persisted_slot, Some(5));
     }
 
@@ -1138,6 +1152,7 @@ mod tests {
         assert_eq!(summary.events_skipped, 0);
         assert_eq!(summary.batches_written, 0);
         assert_eq!(summary.write_summary.attempted, 0);
+        assert_eq!(summary.write_summary.skipped, 0);
         assert_eq!(summary.last_persisted_slot, None);
     }
 
@@ -1262,6 +1277,7 @@ mod tests {
         assert_eq!(summary.events_seen, 3);
         assert_eq!(summary.events_skipped, 2);
         assert_eq!(summary.write_summary.attempted, 1);
+        assert_eq!(summary.write_summary.skipped, 0);
         assert_eq!(summary.last_persisted_slot, Some(3));
     }
 
@@ -1299,6 +1315,7 @@ mod tests {
         assert_eq!(summary.events_seen, 3);
         assert_eq!(summary.events_skipped, 0);
         assert_eq!(summary.write_summary.attempted, 3);
+        assert_eq!(summary.write_summary.skipped, 0);
         assert_eq!(summary.last_persisted_slot, Some(3));
     }
 }

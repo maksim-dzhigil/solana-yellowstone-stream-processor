@@ -2062,6 +2062,7 @@ dependencies = [
  "solana-yellowstone-domain",
  "sqlx",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

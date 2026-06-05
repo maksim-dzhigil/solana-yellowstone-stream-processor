@@ -11,6 +11,7 @@ pub struct WriteSummary {
     pub attempted: usize,
     pub inserted: usize,
     pub deduplicated: usize,
+    pub skipped: usize,
 }
 
 #[async_trait]
@@ -38,6 +39,7 @@ impl std::ops::AddAssign for WriteSummary {
         self.attempted += rhs.attempted;
         self.inserted += rhs.inserted;
         self.deduplicated += rhs.deduplicated;
+        self.skipped += rhs.skipped;
     }
 }
 
@@ -51,6 +53,7 @@ mod tests {
             attempted: 10,
             inserted: 7,
             deduplicated: 3,
+            skipped: 0,
         };
 
         assert_eq!(summary.attempted - summary.inserted, summary.deduplicated);

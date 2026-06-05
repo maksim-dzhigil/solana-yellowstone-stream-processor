@@ -45,10 +45,32 @@ impl EventWriter for PostgresEventWriter {
             return Ok(WriteSummary::default());
         }
 
-        let rows = events
-            .iter()
-            .map(EventRow::try_from)
-            .collect::<Result<Vec<_>, _>>()?;
+        let mut rows = Vec::with_capacity(events.len());
+        let mut skipped = 0usize;
+
+        for event in events {
+            match EventRow::try_from(event) {
+                Ok(row) => rows.push(row),
+                Err(ref e) => {
+                    skipped += 1;
+                    tracing::warn!(
+                        event_id = %event.event_id(),
+                        slot = event.slot(),
+                        error = %e,
+                        "skipping event that failed to convert to postgres row"
+                    );
+                }
+            }
+        }
+
+        if rows.is_empty() {
+            return Ok(WriteSummary {
+                attempted: events.len(),
+                inserted: 0,
+                deduplicated: 0,
+                skipped,
+            });
+        }
 
         let mut query = QueryBuilder::<Postgres>::new(
             "INSERT INTO events (event_id, identity_version, identity, slot, signature, program_id, account, event_type, payload) ",
@@ -74,13 +96,14 @@ impl EventWriter for PostgresEventWriter {
             .await
             .map_err(PostgresWriteError::Sqlx)?;
 
-        let attempted = events.len();
+        let attempted = rows.len();
         let inserted = usize::try_from(result.rows_affected()).unwrap_or(usize::MAX);
 
         Ok(WriteSummary {
             attempted,
             inserted,
             deduplicated: attempted.saturating_sub(inserted),
+            skipped,
         })
     }
 }
@@ -112,6 +135,8 @@ impl std::error::Error for PostgresInitError {
 #[derive(Debug)]
 pub enum PostgresWriteError {
     SlotOutOfRange { slot: u64 },
+    IdentityVersionOutOfRange { version: u16 },
+    SerializeIdentity(serde_json::Error),
     Sqlx(sqlx::Error),
 }
 
@@ -121,6 +146,15 @@ impl fmt::Display for PostgresWriteError {
             Self::SlotOutOfRange { slot } => {
                 write!(f, "slot {slot} does not fit into postgres BIGINT")
             }
+            Self::IdentityVersionOutOfRange { version } => {
+                write!(
+                    f,
+                    "identity version {version} does not fit into postgres SMALLINT"
+                )
+            }
+            Self::SerializeIdentity(err) => {
+                write!(f, "failed to serialize event identity: {err}")
+            }
             Self::Sqlx(err) => write!(f, "postgres write failed: {err}"),
         }
     }
@@ -129,7 +163,8 @@ impl fmt::Display for PostgresWriteError {
 impl std::error::Error for PostgresWriteError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::SlotOutOfRange { .. } => None,
+            Self::SlotOutOfRange { .. } | Self::IdentityVersionOutOfRange { .. } => None,
+            Self::SerializeIdentity(err) => Some(err),
             Self::Sqlx(err) => Some(err),
         }
     }
@@ -156,12 +191,19 @@ impl TryFrom<&NormalizedEvent> for EventRow {
         let slot = i64::try_from(event_slot)
             .map_err(|_| PostgresWriteError::SlotOutOfRange { slot: event_slot })?;
 
+        let identity_version = i16::try_from(event.identity_version()).map_err(|_| {
+            PostgresWriteError::IdentityVersionOutOfRange {
+                version: event.identity_version(),
+            }
+        })?;
+
+        let identity =
+            serde_json::to_value(&event.identity).map_err(PostgresWriteError::SerializeIdentity)?;
+
         Ok(Self {
             event_id: event.event_id(),
-            identity_version: i16::try_from(event.identity_version())
-                .expect("identity version fits i16"),
-            identity: serde_json::to_value(&event.identity)
-                .expect("event identity should serialize"),
+            identity_version,
+            identity,
             slot,
             signature: event.signature().map(str::to_owned),
             program_id: event.program_id().map(str::to_owned),
@@ -203,6 +245,7 @@ mod tests {
         assert_eq!(first_summary.attempted, 3);
         assert_eq!(first_summary.inserted, 2);
         assert_eq!(first_summary.deduplicated, 1);
+        assert_eq!(first_summary.skipped, 0);
 
         let second_summary = writer
             .write_batch(&[first.clone(), second.clone()])
@@ -212,6 +255,7 @@ mod tests {
         assert_eq!(second_summary.attempted, 2);
         assert_eq!(second_summary.inserted, 0);
         assert_eq!(second_summary.deduplicated, 2);
+        assert_eq!(second_summary.skipped, 0);
 
         let persisted_count: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE signature = ANY($1)")
@@ -285,5 +329,13 @@ mod tests {
             err,
             PostgresWriteError::SlotOutOfRange { slot: u64::MAX }
         ));
+    }
+
+    #[test]
+    fn identity_version_out_of_range_returns_error() {
+        // Note: NormalizedEvent does not expose a way to set an arbitrary identity_version,
+        // so we test the error variant directly.
+        let err = PostgresWriteError::IdentityVersionOutOfRange { version: u16::MAX };
+        assert!(err.to_string().contains("identity version"));
     }
 }
