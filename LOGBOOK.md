@@ -1,3 +1,61 @@
+## 2026-06-05
+
+**Documentation hardening, workspace lints, metrics, gap tests, domain decoding, and consumer API.**
+
+- **Docs finalization for v0.1.0.**
+  Repositioned README around market-data infrastructure. Added `docs/architecture.md` and `docs/reliability.md` with at-least-once semantics, idempotency guarantees, cursor semantics, and non-guarantees. Fixed license to MIT OR Apache-2.0.
+
+- **Storage error propagation and per-event skipping.**
+  Changed `EventRow::try_from` to return `Result` instead of panicking on invalid events. The batch writer now skips individual malformed events and continues with the rest of the batch, logging a warning per skipped event.
+
+- **Workspace clippy lints.**
+  Added `clippy.toml` with `unwrap_used = "deny"`, `expect_used = "deny"`, `panic = "deny"`. Tests exempted via `allow-unwrap-in-tests` and `allow-expect-in-tests`.
+
+- **CI test coverage.**
+  Added `cargo-llvm-cov` step to CI workflow for line coverage reporting.
+
+- **Infra-grade metrics.**
+  Added `Metrics` struct with Prometheus histograms, counters, and gauges: `batch_write_latency_seconds`, `ingest_events_total`, `channel_depth/capacity/utilization`, `last_observed/persisted/finalized_slot`, `slot_lag`, `reconnect_attempts_total`, `decode_errors_total`. Replaced hand-written `/metrics` handler with `prometheus::TextEncoder`. Instrumented pipeline callbacks to observe batch write duration and channel state. Updated `docs/reliability.md` with Metrics Reference table and SLO targets (p95 < 1s, confirmed < 3s, cursor lag < 20s).
+
+- **Gap-injected replay tests.**
+  Added `crates/stream/tests/gap_replay.rs` with two PostgreSQL-backed integration tests: `gap_replay_leaves_contiguous_cursor_at_gap_boundary` (slots 100, 101, 103 → cursor stops at 101) and `gap_replay_resumes_after_gap_is_filled` (add slot 102 → cursor advances to 103).
+
+- **Added `DecodedEvent` enum and domain types in `crates/domain/src/decoded.rs`.**
+  `TokenBalanceDelta` captures per-account mint balance changes.
+  `DexSwap` represents a minimal two-legged swap inferred from opposing deltas.
+  `UnknownProgramEvent` is a placeholder for unsupported programs.
+
+- **Token balance delta extraction from transaction payloads.**
+  `extract_token_balance_deltas(payload)` expects a `token_balances` array with `account`, `mint`, `pre`, and `post` fields. It returns `Vec<TokenBalanceDelta>` or `DecodeError::MissingTokenBalances` / `DecodeError::InvalidTokenBalance`.
+
+- **Simple swap inference from balance deltas.**
+  `infer_swap_from_balance_deltas(slot, signature, program_id, deltas)` infers a clean swap only when exactly two accounts have non-zero deltas, one loses tokens and the other gains tokens, and the mints differ. Rejects ambiguous changes (three or more deltas, same mint, no opposing pair) with `DecodeError::AmbiguousSwap`.
+
+- **`swaps` PostgreSQL table and migration.**
+  Added `migrations/0002_swaps.sql` with columns: `slot`, `signature`, `program_id`, `token_in`, `token_in_amount`, `token_out`, `token_out_amount`, `inferred_at`. Indexed on `slot`, `signature`, and `program_id, slot`.
+
+- **`SwapWriter` trait and `PostgresSwapWriter`.**
+  Added in `crates/storage/src/swaps.rs`. Uses `QueryBuilder` batch insert with `ON CONFLICT` left to caller (current impl has no unique constraint on swaps; duplicates are allowed for demo purposes).
+
+- **Integration tests for the full decoding chain.**
+  `crates/stream/tests/swap_decoding.rs` has two PostgreSQL-backed tests:
+  1. `transaction_payload_yields_balance_deltas_and_inferred_swap` — synthetic transaction with two token balance changes -> extract deltas -> infer swap -> write to Postgres -> verify row.
+  2. `ambiguous_payload_does_not_infer_swap` — three-legged change -> inference fails -> empty batch write succeeds.
+
+- **Documentation.**
+  Added `docs/domain-decoding.md` with decoder contract, limitations, and future work. Updated README roadmap to mark "Token balance delta extraction and DEX swap inference" as **Implemented (demo-level)**. Updated `internal_documents/BACKLOG.md` to mark Priority 4 and Milestone 3 as completed.
+
+- **Consumer-facing REST API.**
+  - `GET /v1/events/recent?event_type=<>&limit=<>` — Postgres-backed query with limit clamped to 1..1000, ordered by slot DESC, signature DESC NULLS LAST, event_id DESC.
+  - `GET /v1/swaps/recent?program_id=<>&limit=<>` — Postgres-backed query with limit clamped to 1..1000, ordered by slot DESC, signature DESC.
+  - `GET /v1/streams/{stream_name}/lag` — returns cursor progress (`last_persisted_slot`, `last_contiguous_finalized_slot`, `last_finalized_slot`).
+  - Added `crates/storage/src/api.rs` with `recent_events`, `recent_swaps`, `stream_lag` query functions and `RecentEvent`, `RecentSwap`, `StreamLag` structs.
+  - Wired `PgPool` into `AppState` so API endpoints share the same Postgres connection pool as the ingestion pipeline.
+  - Added integration tests in `crates/app/src/http.rs` that seed events/swaps/cursor into Postgres, then query the API endpoints via axum `oneshot` and verify JSON responses.
+  - Added `docs/api.md` documenting endpoints, parameters, response shapes, and limitations.
+
+- **All tests pass**, including unit tests, clippy, and PostgreSQL-backed integration tests.
+
 ## 2026-06-04
 
 **Live mode correctness and reliability hardening.**
