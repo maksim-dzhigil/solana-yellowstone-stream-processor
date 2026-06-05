@@ -1,3 +1,4 @@
+pub mod api;
 pub mod cursor;
 pub mod postgres;
 pub mod slots;

@@ -1,5 +1,11 @@
-use axum::{Json, Router, extract::State, http::header, response::IntoResponse, routing::get};
-use serde::Serialize;
+use axum::{
+    Json, Router,
+    extract::{Query, State},
+    http::header,
+    response::IntoResponse,
+    routing::get,
+};
+use serde::{Deserialize, Serialize};
 use solana_yellowstone_stream::pipeline::PipelineSummary;
 #[cfg(feature = "yellowstone-live")]
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -242,9 +248,10 @@ pub type StatusSender = watch::Sender<StatusSnapshot>;
 pub type StatusReceiver = watch::Receiver<StatusSnapshot>;
 
 #[derive(Debug, Clone)]
-struct StatusState {
+struct AppState {
     status: StatusReceiver,
     metrics: Arc<Metrics>,
+    pool: Option<sqlx::PgPool>,
 }
 
 pub fn status_channel(initial: StatusSnapshot) -> (StatusSender, StatusReceiver) {
@@ -278,9 +285,10 @@ pub async fn serve(
     addr: &str,
     status: StatusSnapshot,
     metrics: Arc<Metrics>,
+    pool: sqlx::PgPool,
 ) -> Result<(), HttpError> {
     let (_sender, receiver) = status_channel(status);
-    serve_status_updates_until_shutdown(addr, receiver, metrics, shutdown_signal()).await
+    serve_status_updates_until_shutdown(addr, receiver, metrics, Some(pool), shutdown_signal()).await
 }
 
 #[cfg(feature = "yellowstone-live")]
@@ -288,9 +296,10 @@ pub async fn serve_updates_until_shutdown(
     addr: &str,
     status: StatusReceiver,
     metrics: Arc<Metrics>,
+    pool: sqlx::PgPool,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<(), HttpError> {
-    serve_status_updates_until_shutdown(addr, status, metrics, shutdown).await
+    serve_status_updates_until_shutdown(addr, status, metrics, Some(pool), shutdown).await
 }
 
 #[cfg(test)]
@@ -301,17 +310,18 @@ async fn serve_until_shutdown(
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<(), HttpError> {
     let (_sender, receiver) = status_channel(status);
-    serve_status_updates_until_shutdown(addr, receiver, metrics, shutdown).await
+    serve_status_updates_until_shutdown(addr, receiver, metrics, None, shutdown).await
 }
 
 async fn serve_status_updates_until_shutdown(
     addr: &str,
     status: StatusReceiver,
     metrics: Arc<Metrics>,
+    pool: Option<sqlx::PgPool>,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<(), HttpError> {
     let listener = TcpListener::bind(addr).await.map_err(HttpError::Bind)?;
-    axum::serve(listener, router(status, metrics))
+    axum::serve(listener, router(status, metrics, pool))
         .with_graceful_shutdown(shutdown)
         .await
         .map_err(HttpError::Serve)
@@ -324,14 +334,21 @@ async fn shutdown_signal() {
     tracing::info!("shutdown signal received");
 }
 
-fn router(status: StatusReceiver, metrics: Arc<Metrics>) -> Router {
-    let state = StatusState { status, metrics };
+fn router(status: StatusReceiver, metrics: Arc<Metrics>, pool: Option<sqlx::PgPool>) -> Router {
+    let state = AppState {
+        status,
+        metrics,
+        pool,
+    };
 
     Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
         .route("/status", get(status_handler))
         .route("/metrics", get(metrics_handler))
+        .route("/v1/events/recent", get(recent_events_handler))
+        .route("/v1/swaps/recent", get(recent_swaps_handler))
+        .route("/v1/streams/{stream_name}/lag", get(stream_lag_handler))
         .with_state(state)
 }
 
@@ -339,22 +356,110 @@ async fn healthz() -> &'static str {
     "ok"
 }
 
-async fn readyz(State(state): State<StatusState>) -> Json<ReadyResponse> {
+async fn readyz(State(state): State<AppState>) -> Json<ReadyResponse> {
     let status = state.status.borrow();
     Json(ReadyResponse {
         ready: status.health == HealthState::Ready,
     })
 }
 
-async fn status_handler(State(state): State<StatusState>) -> Json<StatusSnapshot> {
+async fn status_handler(State(state): State<AppState>) -> Json<StatusSnapshot> {
     Json(refresh_status(state.status.borrow().clone()))
 }
 
-async fn metrics_handler(State(state): State<StatusState>) -> impl IntoResponse {
+async fn metrics_handler(State(state): State<AppState>) -> impl IntoResponse {
     (
         [(header::CONTENT_TYPE, METRICS_CONTENT_TYPE)],
         state.metrics.render(),
     )
+}
+
+#[derive(Debug, Deserialize)]
+struct RecentEventsQuery {
+    event_type: Option<String>,
+    #[serde(default = "default_limit")]
+    limit: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct RecentSwapsQuery {
+    program_id: Option<String>,
+    #[serde(default = "default_limit")]
+    limit: i64,
+}
+
+const fn default_limit() -> i64 {
+    100
+}
+
+fn require_pool(state: &AppState) -> Result<&sqlx::PgPool, ApiError> {
+    state
+        .pool
+        .as_ref()
+        .ok_or_else(|| ApiError::Storage(sqlx::Error::PoolTimedOut))
+}
+
+async fn recent_events_handler(
+    State(state): State<AppState>,
+    Query(params): Query<RecentEventsQuery>,
+) -> Result<Json<Vec<solana_yellowstone_storage::api::RecentEvent>>, ApiError> {
+    let pool = require_pool(&state)?;
+    let limit = params.limit.clamp(1, 1_000);
+    let events = solana_yellowstone_storage::api::recent_events(
+        pool,
+        params.event_type.as_deref(),
+        limit,
+    )
+    .await
+    .map_err(ApiError::Storage)?;
+    Ok(Json(events))
+}
+
+async fn recent_swaps_handler(
+    State(state): State<AppState>,
+    Query(params): Query<RecentSwapsQuery>,
+) -> Result<Json<Vec<solana_yellowstone_storage::api::RecentSwap>>, ApiError> {
+    let pool = require_pool(&state)?;
+    let limit = params.limit.clamp(1, 1_000);
+    let swaps = solana_yellowstone_storage::api::recent_swaps(
+        pool,
+        params.program_id.as_deref(),
+        limit,
+    )
+    .await
+    .map_err(ApiError::Storage)?;
+    Ok(Json(swaps))
+}
+
+async fn stream_lag_handler(
+    State(state): State<AppState>,
+    axum::extract::Path(stream_name): axum::extract::Path<String>,
+) -> Result<Json<solana_yellowstone_storage::api::StreamLag>, ApiError> {
+    let pool = require_pool(&state)?;
+    let lag = solana_yellowstone_storage::api::stream_lag(pool, &stream_name)
+        .await
+        .map_err(ApiError::Storage)?;
+    Ok(Json(lag))
+}
+
+#[derive(Debug)]
+enum ApiError {
+    Storage(sqlx::Error),
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> axum::response::Response {
+        let (status, message) = match self {
+            Self::Storage(err) => {
+                tracing::error!(error = %err, "api storage query failed");
+                (
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    "storage query failed".to_owned(),
+                )
+            }
+        };
+        (status, Json(serde_json::json!({ "error": message }))).into_response()
+    }
 }
 
 fn refresh_status(status: StatusSnapshot) -> StatusSnapshot {
@@ -382,7 +487,10 @@ mod tests {
         http::{Request, StatusCode, header},
     };
     use serde_json::Value;
-    use solana_yellowstone_storage::WriteSummary;
+    use solana_yellowstone_storage::{
+        CursorStore, EventWriter, WriteSummary,
+        swaps::SwapWriter,
+    };
     use solana_yellowstone_stream::pipeline::PipelineSummary;
     use std::sync::Arc;
     use tower::ServiceExt;
@@ -547,7 +655,7 @@ mod tests {
         );
         let (_sender, receiver) = super::status_channel(status);
 
-        let response = router(receiver, test_metrics())
+        let response = router(receiver, test_metrics(), None)
             .oneshot(
                 Request::builder()
                     .uri("/status")
@@ -688,7 +796,7 @@ mod tests {
 
     async fn request(path: &str) -> TestResponse {
         let (_sender, receiver) = super::status_channel(contract_status());
-        let response = router(receiver, test_metrics())
+        let response = router(receiver, test_metrics(), None)
             .oneshot(
                 Request::builder()
                     .uri(path)
@@ -736,4 +844,113 @@ mod tests {
 
         assert!(output.contains(r#"stream_name="replay\\test\nmainnet\"""#));
     }
+
+    async fn test_pool() -> Option<sqlx::PgPool> {
+        let database_url = std::env::var("TEST_DATABASE_URL").ok()?;
+        let pool = sqlx::PgPool::connect(&database_url).await.ok()?;
+        Some(pool)
+    }
+
+    async fn api_request(path: &str, pool: sqlx::PgPool) -> TestResponse {
+        let (_sender, receiver) = super::status_channel(empty_status());
+        let response = router(receiver, test_metrics(), Some(pool))
+            .oneshot(
+                Request::builder()
+                    .uri(path)
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+        let status = response.status();
+        let content_type = response.headers().get(header::CONTENT_TYPE).map(|value| {
+            value
+                .to_str()
+                .expect("content type should be ascii")
+                .to_owned()
+        });
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body should read");
+
+        TestResponse {
+            status,
+            content_type,
+            body: String::from_utf8(body.to_vec()).expect("body should be utf8"),
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires local postgres; run `make compose-up test-postgres`"]
+    async fn recent_events_endpoint_returns_seeded_events() {
+        let pool = test_pool().await.expect("TEST_DATABASE_URL must be set");
+
+        let writer = solana_yellowstone_storage::postgres::PostgresEventWriter::from_pool(pool.clone());
+        let event = solana_yellowstone_domain::event::NormalizedEvent::new(
+            solana_yellowstone_domain::event::EventIdentity::Transaction {
+                cluster: "localnet".to_owned(),
+                slot: 70_001,
+                signature: "api-event-sig".to_owned(),
+                index: 0,
+            },
+            serde_json::json!({"token_balances": []}),
+        );
+        writer.write_batch(&[event]).await.expect("write event");
+
+        let response = api_request("/v1/events/recent?event_type=transaction&limit=10", pool).await;
+
+        assert_eq!(response.status, StatusCode::OK);
+        assert_content_type_starts_with(&response, "application/json");
+        let body: Value = serde_json::from_str(&response.body).expect("json should parse");
+        let events = body.as_array().expect("should be array");
+        assert!(!events.is_empty());
+        assert_eq!(events[0]["slot"], 70_001);
+        assert_eq!(events[0]["event_type"], "transaction");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires local postgres; run `make compose-up test-postgres`"]
+    async fn recent_swaps_endpoint_returns_seeded_swaps() {
+        let pool = test_pool().await.expect("TEST_DATABASE_URL must be set");
+
+        let swap_writer = solana_yellowstone_storage::swaps::PostgresSwapWriter::from_pool(pool.clone());
+        let swap = solana_yellowstone_domain::decoded::DexSwap {
+            slot: 70_002,
+            signature: "api-swap-sig".to_owned(),
+            program_id: "program-api-test".to_owned(),
+            token_in: "mint-a".to_owned(),
+            token_in_amount: 500,
+            token_out: "mint-b".to_owned(),
+            token_out_amount: 1_000,
+        };
+        swap_writer.write_swaps(&[swap]).await.expect("write swap");
+
+        let response = api_request("/v1/swaps/recent?program_id=program-api-test&limit=10", pool).await;
+
+        assert_eq!(response.status, StatusCode::OK);
+        assert_content_type_starts_with(&response, "application/json");
+        let body: Value = serde_json::from_str(&response.body).expect("json should parse");
+        let swaps = body.as_array().expect("should be array");
+        assert!(!swaps.is_empty());
+        assert_eq!(swaps[0]["slot"], 70_002);
+        assert_eq!(swaps[0]["program_id"], "program-api-test");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires local postgres; run `make compose-up test-postgres`"]
+    async fn stream_lag_endpoint_returns_cursor() {
+        let pool = test_pool().await.expect("TEST_DATABASE_URL must be set");
+
+        let cursor_store = solana_yellowstone_storage::cursor::PostgresCursorStore::from_pool(pool.clone());
+        cursor_store.update_after_batch("lag-test-stream", 123).await.expect("update cursor");
+
+        let response = api_request("/v1/streams/lag-test-stream/lag", pool).await;
+
+        assert_eq!(response.status, StatusCode::OK);
+        assert_content_type_starts_with(&response, "application/json");
+        let body: Value = serde_json::from_str(&response.body).expect("json should parse");
+        assert_eq!(body["stream_name"], "lag-test-stream");
+        assert_eq!(body["last_persisted_slot"], 123);
+    }
+
 }

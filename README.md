@@ -125,7 +125,7 @@ For a detailed architecture overview, see [docs/architecture.md](docs/architectu
 | Gap-free live recovery with fork handling | Designed, future milestone |
 | Token balance delta extraction and DEX swap inference | **Implemented** (demo-level) |
 | ClickHouse sink for high-throughput analytics | Future milestone |
-| REST API for recent events and swaps | Future milestone |
+| REST API for recent events and swaps | **Implemented** (demo-level) |
 
 ## Honest limitations
 
@@ -173,6 +173,7 @@ The project includes a compatibility checklist and a status matrix for Yellowsto
 - [docs/live-recovery.md](docs/live-recovery.md) — live reconnect and recovery policy.
 - [docs/finalized-reconciliation.md](docs/finalized-reconciliation.md) — gap-aware finalized recovery design.
 - [docs/domain-decoding.md](docs/domain-decoding.md) — domain event decoding and swap inference.
+- [docs/api.md](docs/api.md) — consumer-facing REST API reference.
 - [LOGBOOK.md](LOGBOOK.md) — project progress log.
 
 ## Development

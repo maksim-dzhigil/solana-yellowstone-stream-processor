@@ -144,7 +144,7 @@ async fn run_replay(config: Config) -> Result<(), AppRunError> {
 
     let status = StatusSnapshot::from_pipeline(config.stream_name.clone(), summary);
     info!(http_addr = %config.http_addr, "serving http endpoints");
-    http::serve(&config.http_addr, status, metrics).await?;
+    http::serve(&config.http_addr, status, metrics, writer.pool().clone()).await?;
     info!("http server stopped");
 
     Ok(())
@@ -280,6 +280,7 @@ async fn run_yellowstone(config: Config) -> Result<(), AppRunError> {
         &config.http_addr,
         status_receiver,
         metrics.clone(),
+        writer.pool().clone(),
         http_shutdown,
     );
     let reconnect_status_sender = status_sender.clone();
