@@ -1,6 +1,7 @@
 # Solana Yellowstone Stream Processor
 
 [![CI](https://github.com/maksim-dzhigil/solana-yellowstone-stream-processor/actions/workflows/ci.yml/badge.svg)](https://github.com/maksim-dzhigil/solana-yellowstone-stream-processor/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/maksim-dzhigil/solana-yellowstone-stream-processor/branch/main/graph/badge.svg)](https://codecov.io/gh/maksim-dzhigil/solana-yellowstone-stream-processor)
 [![Rust](https://img.shields.io/badge/rust-stable-orange.svg)](https://rust-lang.org)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
 

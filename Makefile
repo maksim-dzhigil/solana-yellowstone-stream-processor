@@ -2,7 +2,7 @@ SHELL := /bin/sh
 
 TEST_DATABASE_URL ?= postgres://postgres:postgres@localhost:5433/solana_stream
 
-.PHONY: fmt fmt-check test test-postgres clippy check verify build run compose-up compose-down bench-generate bench-replay
+.PHONY: fmt fmt-check test test-postgres clippy check verify build run compose-up compose-down bench-generate bench-replay coverage
 
 fmt:
 	cargo fmt --all
@@ -49,3 +49,6 @@ bench-replay:
 		--mode replay --source $(FIXTURE_OUTPUT)
 
 bench: bench-generate bench-replay
+
+coverage:
+	cargo llvm-cov --workspace --ignore-filename-regex 'src/bin/' --summary-only -- --include-ignored
