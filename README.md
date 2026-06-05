@@ -120,7 +120,7 @@ For a detailed architecture overview, see [docs/architecture.md](docs/architectu
 | Malformed update skipping and decode error metrics | **Implemented** |
 | Provider compatibility tracking | Documented, community-verified |
 | Synthetic replay generator + benchmarks | **Implemented** |
-| Infra-grade metrics (batch latency, channel pressure, slot lag) | **Planned** |
+| Infra-grade metrics (batch latency, channel pressure, slot lag) | **Implemented** |
 | Gap-free live recovery with fork handling | Designed, future milestone |
 | Token balance delta extraction and DEX swap inference | Future milestone |
 | ClickHouse sink for high-throughput analytics | Future milestone |

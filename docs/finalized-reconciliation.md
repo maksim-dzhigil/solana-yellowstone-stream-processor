@@ -1,6 +1,6 @@
 # Finalized Slot Reconciliation Design
 
-This document describes the planned path from max-slot cursoring to gap-aware finalized recovery. It is a design document, not implemented behavior.
+This document describes the path from max-slot cursoring to gap-aware finalized recovery. Core storage (`stream_slots`, `stream_cursors` with contiguous watermark), pipeline instrumentation, and controlled replay gap tests are implemented. Provider-specific live validation remains future work.
 
 ## Problem
 
@@ -20,16 +20,21 @@ A max-slot cursor can move past a missing slot if later slots were persisted fir
 
 ## Desired Model
 
-Keep raw event persistence separate from slot reconciliation. Event writes should stay idempotent and batch-oriented; reconciliation should maintain slot-level completeness state.
+Keep raw event persistence separate from slot reconciliation. Event writes stay idempotent and batch-oriented; reconciliation maintains slot-level completeness state.
 
-Planned tables or logical models:
+Implemented tables:
 
-| Model | Purpose |
-|---|---|
-| `stream_slots` | Track observed/finalized/persisted state per stream and slot. |
-| `stream_slot_gaps` | Track missing slot ranges, first detected time, last checked time, and resolution state. |
-| `stream_reconciliation_runs` | Track provider backfill/recheck attempts and outcomes. |
-| `stream_cursors` extension | Add `last_contiguous_finalized_slot` without removing current max-slot cursor. |
+| Model | Purpose | Status |
+|---|---|---|
+| `stream_slots` | Track observed/finalized/persisted state per stream and slot. | ✅ Implemented |
+| `stream_cursors` | Extended with `last_contiguous_finalized_slot` alongside `last_persisted_slot`. | ✅ Implemented |
+
+Future tables:
+
+| Model | Purpose | Status |
+|---|---|---|
+| `stream_slot_gaps` | Track missing slot ranges, first detected time, last checked time, and resolution state. | Planned |
+| `stream_reconciliation_runs` | Track provider backfill/recheck attempts and outcomes. | Planned |
 
 ## Slot State
 
@@ -46,16 +51,24 @@ Exact completeness depends on subscription type and provider guarantees. A slots
 
 ## Cursor Policy
 
-Current policy:
+Current replay policy:
 
-- Keep using max persisted slot for replay MVP and basic live resume.
-- Continue exposing gap-risk telemetry when local recovery cannot prove a cursor-backed replay point.
+- `last_contiguous_finalized_slot` is computed from finalized slot parent chains in `stream_slots`.
+- The watermark advances only across proven contiguous finalized ancestry.
+- Gap-injected replay tests verify that a missing slot (e.g., 102 with slots 100, 101, 103) holds the contiguous cursor at the gap boundary (101).
+- `last_persisted_slot` continues to track the maximum slot written for operational metrics.
+
+Current live policy:
+
+- Reconnect uses `last_contiguous_finalized_slot` as `from_slot` when available.
+- Gap-risk telemetry is exposed when recovery cannot prove a cursor-backed replay point.
+- Live gap behavior depends on the concrete provider; validate with [provider-compatibility.md](provider-compatibility.md).
 
 Future policy:
 
-- Use `last_contiguous_finalized_slot` for gap-free recovery claims.
+- Use `last_contiguous_finalized_slot` for gap-free recovery claims once provider behavior is validated.
 - Advance `last_contiguous_finalized_slot` only when every slot up to that point is finalized and complete or explicitly reconciled.
-- Keep `last_persisted_slot` as an operational metric, not as a proof of contiguous recovery.
+- Add automated backfill for gaps that fall within provider retention.
 
 ## Metrics
 
@@ -83,12 +96,12 @@ Track provider status in [provider-matrix.md](provider-matrix.md). Validate prov
 
 ## Implementation Sequence
 
-1. Add storage model for slot observations and gaps.
-2. Persist slot lifecycle events separately from raw event persistence.
-3. Compute `last_finalized_slot` and unresolved gaps.
-4. Add status and metrics for finalized cursor lag and unresolved gaps.
-5. Add provider-specific reconciliation/backfill adapters.
-6. Promote recovery claims only after controlled replay/reconnect tests prove contiguous finalized coverage.
+1. ✅ Add storage model for slot observations and gaps. (`stream_slots`, `stream_cursors` extended)
+2. ✅ Persist slot lifecycle events separately from raw event persistence. (`slot_state_from_event` + `PostgresSlotStateStore`)
+3. ✅ Compute `last_finalized_slot` and unresolved gaps. (`advance_contiguous_finalized` recursive SQL)
+4. ✅ Add status and metrics for finalized cursor lag and unresolved gaps. (`last_contiguous_finalized_slot`, `last_finalized_slot`, `slot_lag`)
+5. ⏳ Add provider-specific reconciliation/backfill adapters.
+6. ✅ Promote recovery claims only after controlled replay/reconnect tests prove contiguous finalized coverage. (Gap-injected replay tests implemented; live provider validation pending.)
 
 ## Non-Goals For The First Implementation
 

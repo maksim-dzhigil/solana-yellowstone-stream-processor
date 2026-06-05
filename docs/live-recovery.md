@@ -62,3 +62,4 @@ The current implementation does not yet prove gap-free live recovery:
 - Fill a provider compatibility profile for the first real Yellowstone provider.
 - Add provider-specific integration tests once a concrete Yellowstone provider profile is selected.
 - Add an automated backfill/reconciliation job for gaps that fall within provider retention.
+- Add fork/dead-slot replay tests to verify watermark behavior across reorgs.
