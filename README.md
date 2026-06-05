@@ -89,7 +89,8 @@ Before relying on live recovery, validate your concrete provider profile. Provid
 ```mermaid
 flowchart LR
     A[Replay / Yellowstone gRPC] --> B[NormalizedEvent]
-    B --> C[Bounded channel]
+    B --> H[DecodedEvent]
+    H --> C[Bounded channel]
     C --> D[Batcher]
     D --> E[PostgreSQL<br/>ON CONFLICT DO NOTHING]
     E --> F[Cursor update]
@@ -122,14 +123,14 @@ For a detailed architecture overview, see [docs/architecture.md](docs/architectu
 | Synthetic replay generator + benchmarks | **Implemented** |
 | Infra-grade metrics (batch latency, channel pressure, slot lag) | **Implemented** |
 | Gap-free live recovery with fork handling | Designed, future milestone |
-| Token balance delta extraction and DEX swap inference | Future milestone |
+| Token balance delta extraction and DEX swap inference | **Implemented** (demo-level) |
 | ClickHouse sink for high-throughput analytics | Future milestone |
 | REST API for recent events and swaps | Future milestone |
 
 ## Honest limitations
 
 - **No gap-free live recovery yet.** Finalized slot watermark advances contiguously, but forks and provider-specific replay gaps are not fully reconciled. Document your provider's replay semantics before relying on live resume.
-- **No program-specific decoders yet.** Events are stored as normalized raw envelopes. Domain decoding (swaps, token transfers, etc.) is on the roadmap.
+- **Domain decoding is demo-level.** Token balance delta extraction and simple two-legged swap inference are implemented, but they do not cover full Solana program semantics (fees, routing, decimals, CPI). See [docs/domain-decoding.md](docs/domain-decoding.md).
 - **No Kafka/ClickHouse/Redis sinks yet.** PostgreSQL is the only storage target today.
 - **Replay materializes the full fixture.** Large fixtures load entirely into memory before entering the bounded channel. Streaming JSONL is planned.
 - **Event write and cursor update are not atomic.** Recovery relies on idempotency (`event_id` + `ON CONFLICT DO NOTHING`), not a database transaction.
@@ -171,6 +172,7 @@ The project includes a compatibility checklist and a status matrix for Yellowsto
 - [docs/event-identity.md](docs/event-identity.md) — event ID guarantees and limitations.
 - [docs/live-recovery.md](docs/live-recovery.md) — live reconnect and recovery policy.
 - [docs/finalized-reconciliation.md](docs/finalized-reconciliation.md) — gap-aware finalized recovery design.
+- [docs/domain-decoding.md](docs/domain-decoding.md) — domain event decoding and swap inference.
 - [LOGBOOK.md](LOGBOOK.md) — project progress log.
 
 ## Development

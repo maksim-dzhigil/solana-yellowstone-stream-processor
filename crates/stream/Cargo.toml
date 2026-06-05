@@ -31,4 +31,5 @@ workspace = true
 
 [dev-dependencies]
 async-trait = "0.1"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres"] }
 tokio = { version = "1", features = ["macros", "rt"] }
