@@ -21,3 +21,8 @@ authors = ["Maksim Dzhigil <maksim.dzhigil@gmail.com>"]
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"

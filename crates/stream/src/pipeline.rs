@@ -112,10 +112,11 @@ impl<T> AbortOnDrop<T> {
         }
     }
 
+    #[allow(clippy::expect_used)]
     async fn join(&mut self) -> Result<T, tokio::task::JoinError> {
         self.handle
             .take()
-            .expect("producer task should not be joined twice")
+            .expect("producer task should not be joined twice") // structural invariant
             .await
     }
 }
@@ -1014,6 +1015,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::panic)]
     async fn producer_stops_when_receiver_is_closed() {
         struct PanicAfterFirstEvent {
             next_slot: u64,

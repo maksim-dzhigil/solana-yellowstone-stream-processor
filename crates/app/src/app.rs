@@ -116,6 +116,7 @@ async fn run_replay(config: Config) -> Result<(), AppRunError> {
 }
 
 #[cfg(feature = "yellowstone-live")]
+#[allow(clippy::expect_used)]
 async fn run_yellowstone(config: Config) -> Result<(), AppRunError> {
     info!(
         stream_name = %config.stream_name,
@@ -181,7 +182,7 @@ async fn run_yellowstone(config: Config) -> Result<(), AppRunError> {
         config
             .yellowstone_endpoint
             .clone()
-            .expect("yellowstone endpoint validated before runtime"),
+            .expect("yellowstone endpoint validated before runtime"), // startup invariant
         config.yellowstone_cluster.clone(),
     );
     yellowstone_config.x_token = config.yellowstone_x_token.clone();
