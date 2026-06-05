@@ -88,13 +88,13 @@ Before relying on live recovery, validate your concrete provider profile. Provid
 
 ```mermaid
 flowchart LR
-    A[Replay / Yellowstone gRPC] --> B[NormalizedEvent]
-    B --> H[DecodedEvent]
-    H --> C[Bounded channel]
-    C --> D[Batcher]
-    D --> E[PostgreSQL<br/>ON CONFLICT DO NOTHING]
-    E --> F[Cursor update]
-    F --> G[/healthz /readyz<br/>/status /metrics]
+    A["Replay / Yellowstone gRPC"] --> B["NormalizedEvent"]
+    B --> H["DecodedEvent"]
+    H --> C["Bounded channel"]
+    C --> D["Batcher"]
+    D --> E["PostgreSQL<br/>ON CONFLICT DO NOTHING"]
+    E --> F["Cursor update"]
+    F --> G(["healthz /readyz /status /metrics"])
 ```
 
 - `crates/app` — config, HTTP endpoints, telemetry, shutdown orchestration.

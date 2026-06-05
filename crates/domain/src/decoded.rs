@@ -93,7 +93,9 @@ impl std::error::Error for DecodeError {}
 ///   ]
 /// }
 /// ```
-pub fn extract_token_balance_deltas(payload: &Value) -> Result<Vec<TokenBalanceDelta>, DecodeError> {
+pub fn extract_token_balance_deltas(
+    payload: &Value,
+) -> Result<Vec<TokenBalanceDelta>, DecodeError> {
     let balances = payload
         .get("token_balances")
         .and_then(Value::as_array)
@@ -111,20 +113,18 @@ pub fn extract_token_balance_deltas(payload: &Value) -> Result<Vec<TokenBalanceD
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_owned();
-        let pre_amount = entry
-            .get("pre")
-            .and_then(Value::as_i64)
-            .ok_or_else(|| DecodeError::InvalidTokenBalance {
+        let pre_amount = entry.get("pre").and_then(Value::as_i64).ok_or_else(|| {
+            DecodeError::InvalidTokenBalance {
                 account: account.clone(),
                 reason: "missing or non-numeric 'pre' field".to_owned(),
-            })?;
-        let post_amount = entry
-            .get("post")
-            .and_then(Value::as_i64)
-            .ok_or_else(|| DecodeError::InvalidTokenBalance {
+            }
+        })?;
+        let post_amount = entry.get("post").and_then(Value::as_i64).ok_or_else(|| {
+            DecodeError::InvalidTokenBalance {
                 account: account.clone(),
                 reason: "missing or non-numeric 'post' field".to_owned(),
-            })?;
+            }
+        })?;
 
         deltas.push(TokenBalanceDelta {
             account,
@@ -180,12 +180,8 @@ pub fn infer_swap_from_balance_deltas(
         });
     }
 
-    let token_in_amount = sender
-        .delta()
-        .unsigned_abs();
-    let token_out_amount = receiver
-        .delta()
-        .unsigned_abs();
+    let token_in_amount = sender.delta().unsigned_abs();
+    let token_out_amount = receiver.delta().unsigned_abs();
 
     Ok(DexSwap {
         slot,
@@ -279,7 +275,8 @@ mod tests {
             },
         ];
 
-        let err = infer_swap_from_balance_deltas(1, "sig", "prog", &deltas).expect_err("should fail");
+        let err =
+            infer_swap_from_balance_deltas(1, "sig", "prog", &deltas).expect_err("should fail");
         assert!(matches!(err, DecodeError::AmbiguousSwap { .. }));
     }
 
@@ -300,7 +297,8 @@ mod tests {
             },
         ];
 
-        let err = infer_swap_from_balance_deltas(1, "sig", "prog", &deltas).expect_err("should fail");
+        let err =
+            infer_swap_from_balance_deltas(1, "sig", "prog", &deltas).expect_err("should fail");
         assert!(matches!(err, DecodeError::AmbiguousSwap { .. }));
     }
 

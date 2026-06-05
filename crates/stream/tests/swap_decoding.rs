@@ -71,7 +71,9 @@ async fn transaction_payload_yields_balance_deltas_and_inferred_swap() {
     assert_eq!(deltas[1].delta(), -100);
 
     // Infer a two-legged swap.
-    let program_id = event.payload["program_id"].as_str().expect("program_id in payload");
+    let program_id = event.payload["program_id"]
+        .as_str()
+        .expect("program_id in payload");
     let swap = infer_swap_from_balance_deltas(
         event.slot(),
         event.signature().expect("signature present"),
@@ -141,7 +143,9 @@ async fn ambiguous_payload_does_not_infer_swap() {
     );
 
     let deltas = extract_token_balance_deltas(&event.payload).expect("should extract deltas");
-    let program_id = event.payload["program_id"].as_str().expect("program_id in payload");
+    let program_id = event.payload["program_id"]
+        .as_str()
+        .expect("program_id in payload");
     let inferred = infer_swap_from_balance_deltas(
         event.slot(),
         event.signature().unwrap(),

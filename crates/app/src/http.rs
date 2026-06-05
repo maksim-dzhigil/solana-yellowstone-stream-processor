@@ -288,7 +288,8 @@ pub async fn serve(
     pool: sqlx::PgPool,
 ) -> Result<(), HttpError> {
     let (_sender, receiver) = status_channel(status);
-    serve_status_updates_until_shutdown(addr, receiver, metrics, Some(pool), shutdown_signal()).await
+    serve_status_updates_until_shutdown(addr, receiver, metrics, Some(pool), shutdown_signal())
+        .await
 }
 
 #[cfg(feature = "yellowstone-live")]
@@ -405,13 +406,10 @@ async fn recent_events_handler(
 ) -> Result<Json<Vec<solana_yellowstone_storage::api::RecentEvent>>, ApiError> {
     let pool = require_pool(&state)?;
     let limit = params.limit.clamp(1, 1_000);
-    let events = solana_yellowstone_storage::api::recent_events(
-        pool,
-        params.event_type.as_deref(),
-        limit,
-    )
-    .await
-    .map_err(ApiError::Storage)?;
+    let events =
+        solana_yellowstone_storage::api::recent_events(pool, params.event_type.as_deref(), limit)
+            .await
+            .map_err(ApiError::Storage)?;
     Ok(Json(events))
 }
 
@@ -421,13 +419,10 @@ async fn recent_swaps_handler(
 ) -> Result<Json<Vec<solana_yellowstone_storage::api::RecentSwap>>, ApiError> {
     let pool = require_pool(&state)?;
     let limit = params.limit.clamp(1, 1_000);
-    let swaps = solana_yellowstone_storage::api::recent_swaps(
-        pool,
-        params.program_id.as_deref(),
-        limit,
-    )
-    .await
-    .map_err(ApiError::Storage)?;
+    let swaps =
+        solana_yellowstone_storage::api::recent_swaps(pool, params.program_id.as_deref(), limit)
+            .await
+            .map_err(ApiError::Storage)?;
     Ok(Json(swaps))
 }
 
@@ -487,10 +482,7 @@ mod tests {
         http::{Request, StatusCode, header},
     };
     use serde_json::Value;
-    use solana_yellowstone_storage::{
-        CursorStore, EventWriter, WriteSummary,
-        swaps::SwapWriter,
-    };
+    use solana_yellowstone_storage::{CursorStore, EventWriter, WriteSummary, swaps::SwapWriter};
     use solana_yellowstone_stream::pipeline::PipelineSummary;
     use std::sync::Arc;
     use tower::ServiceExt;
@@ -885,7 +877,8 @@ mod tests {
     async fn recent_events_endpoint_returns_seeded_events() {
         let pool = test_pool().await.expect("TEST_DATABASE_URL must be set");
 
-        let writer = solana_yellowstone_storage::postgres::PostgresEventWriter::from_pool(pool.clone());
+        let writer =
+            solana_yellowstone_storage::postgres::PostgresEventWriter::from_pool(pool.clone());
         let event = solana_yellowstone_domain::event::NormalizedEvent::new(
             solana_yellowstone_domain::event::EventIdentity::Transaction {
                 cluster: "localnet".to_owned(),
@@ -913,7 +906,8 @@ mod tests {
     async fn recent_swaps_endpoint_returns_seeded_swaps() {
         let pool = test_pool().await.expect("TEST_DATABASE_URL must be set");
 
-        let swap_writer = solana_yellowstone_storage::swaps::PostgresSwapWriter::from_pool(pool.clone());
+        let swap_writer =
+            solana_yellowstone_storage::swaps::PostgresSwapWriter::from_pool(pool.clone());
         let swap = solana_yellowstone_domain::decoded::DexSwap {
             slot: 70_002,
             signature: "api-swap-sig".to_owned(),
@@ -925,7 +919,11 @@ mod tests {
         };
         swap_writer.write_swaps(&[swap]).await.expect("write swap");
 
-        let response = api_request("/v1/swaps/recent?program_id=program-api-test&limit=10", pool).await;
+        let response = api_request(
+            "/v1/swaps/recent?program_id=program-api-test&limit=10",
+            pool,
+        )
+        .await;
 
         assert_eq!(response.status, StatusCode::OK);
         assert_content_type_starts_with(&response, "application/json");
@@ -941,8 +939,12 @@ mod tests {
     async fn stream_lag_endpoint_returns_cursor() {
         let pool = test_pool().await.expect("TEST_DATABASE_URL must be set");
 
-        let cursor_store = solana_yellowstone_storage::cursor::PostgresCursorStore::from_pool(pool.clone());
-        cursor_store.update_after_batch("lag-test-stream", 123).await.expect("update cursor");
+        let cursor_store =
+            solana_yellowstone_storage::cursor::PostgresCursorStore::from_pool(pool.clone());
+        cursor_store
+            .update_after_batch("lag-test-stream", 123)
+            .await
+            .expect("update cursor");
 
         let response = api_request("/v1/streams/lag-test-stream/lag", pool).await;
 
@@ -952,5 +954,4 @@ mod tests {
         assert_eq!(body["stream_name"], "lag-test-stream");
         assert_eq!(body["last_persisted_slot"], 123);
     }
-
 }

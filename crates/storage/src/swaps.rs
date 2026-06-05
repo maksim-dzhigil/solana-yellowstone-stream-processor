@@ -110,12 +110,13 @@ mod tests {
 
         assert_eq!(written, 1);
 
-        let row: (i64, String, i64) =
-            sqlx::query_as("SELECT slot, token_in, token_in_amount FROM swaps WHERE signature = $1")
-                .bind(&swap.signature)
-                .fetch_one(&pool)
-                .await
-                .expect("select should return row");
+        let row: (i64, String, i64) = sqlx::query_as(
+            "SELECT slot, token_in, token_in_amount FROM swaps WHERE signature = $1",
+        )
+        .bind(&swap.signature)
+        .fetch_one(&pool)
+        .await
+        .expect("select should return row");
 
         assert_eq!(row.0, 10_001);
         assert_eq!(row.1, "mint-a");

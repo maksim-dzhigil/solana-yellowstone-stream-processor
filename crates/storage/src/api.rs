@@ -111,10 +111,7 @@ pub struct StreamLag {
 }
 
 /// Return cursor progress for a stream.
-pub async fn stream_lag(
-    pool: &sqlx::PgPool,
-    stream_name: &str,
-) -> Result<StreamLag, sqlx::Error> {
+pub async fn stream_lag(pool: &sqlx::PgPool, stream_name: &str) -> Result<StreamLag, sqlx::Error> {
     let row: (Option<i64>, Option<i64>, Option<i64>) = sqlx::query_as(
         r#"
         SELECT last_persisted_slot, last_contiguous_finalized_slot, last_finalized_slot
@@ -138,13 +135,12 @@ pub async fn stream_lag(
 #[cfg(test)]
 mod tests {
     use super::{recent_events, recent_swaps, stream_lag};
-    use solana_yellowstone_domain::decoded::DexSwap;
-    use solana_yellowstone_domain::event::{EventIdentity, NormalizedEvent};
     use crate::{
-        EventWriter, postgres::PostgresEventWriter, swaps::SwapWriter,
-        swaps::PostgresSwapWriter,
+        EventWriter, postgres::PostgresEventWriter, swaps::PostgresSwapWriter, swaps::SwapWriter,
     };
     use serde_json::json;
+    use solana_yellowstone_domain::decoded::DexSwap;
+    use solana_yellowstone_domain::event::{EventIdentity, NormalizedEvent};
 
     #[tokio::test]
     #[ignore = "requires local postgres; run `make compose-up test-postgres`"]
