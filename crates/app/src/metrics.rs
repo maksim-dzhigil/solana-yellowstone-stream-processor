@@ -182,14 +182,8 @@ impl Metrics {
     }
 
     pub fn set_channel_state(&self, stream_name: &str, depth: usize, capacity: usize) {
-        let depth_i64 = match i64::try_from(depth) {
-            Ok(v) => v,
-            Err(_) => i64::MAX,
-        };
-        let capacity_i64 = match i64::try_from(capacity) {
-            Ok(v) => v,
-            Err(_) => i64::MAX,
-        };
+        let depth_i64 = i64::try_from(depth).unwrap_or(i64::MAX);
+        let capacity_i64 = i64::try_from(capacity).unwrap_or(i64::MAX);
         self.channel_depth
             .with_label_values(&[stream_name])
             .set(depth_i64);
@@ -213,34 +207,22 @@ impl Metrics {
     }
 
     pub fn set_last_observed_slot(&self, slot: u64) {
-        let value = match i64::try_from(slot) {
-            Ok(v) => v,
-            Err(_) => i64::MAX,
-        };
+        let value = i64::try_from(slot).unwrap_or(i64::MAX);
         self.last_observed_slot.set(value);
     }
 
     pub fn set_last_finalized_slot(&self, slot: u64) {
-        let value = match i64::try_from(slot) {
-            Ok(v) => v,
-            Err(_) => i64::MAX,
-        };
+        let value = i64::try_from(slot).unwrap_or(i64::MAX);
         self.last_finalized_slot.set(value);
     }
 
     pub fn set_last_persisted_slot(&self, slot: u64) {
-        let value = match i64::try_from(slot) {
-            Ok(v) => v,
-            Err(_) => i64::MAX,
-        };
+        let value = i64::try_from(slot).unwrap_or(i64::MAX);
         self.last_persisted_slot.set(value);
     }
 
     pub fn set_slot_lag(&self, lag: u64) {
-        let value = match i64::try_from(lag) {
-            Ok(v) => v,
-            Err(_) => i64::MAX,
-        };
+        let value = i64::try_from(lag).unwrap_or(i64::MAX);
         self.slot_lag.set(value);
     }
 
