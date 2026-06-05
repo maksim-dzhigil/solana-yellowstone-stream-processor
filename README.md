@@ -85,14 +85,14 @@ Before relying on live recovery, validate your concrete provider profile. Provid
 
 ## Architecture
 
-```text
-Replay / Yellowstone gRPC
-  -> NormalizedEvent
-  -> Bounded channel
-  -> Batcher
-  -> PostgreSQL (idempotent batch insert, ON CONFLICT DO NOTHING)
-  -> Cursor update (after successful batch)
-  -> /healthz /readyz /status /metrics
+```mermaid
+flowchart LR
+    A[Replay / Yellowstone gRPC] --> B[NormalizedEvent]
+    B --> C[Bounded channel]
+    C --> D[Batcher]
+    D --> E[PostgreSQL<br/>ON CONFLICT DO NOTHING]
+    E --> F[Cursor update]
+    F --> G[/healthz /readyz<br/>/status /metrics]
 ```
 
 - `crates/app` — config, HTTP endpoints, telemetry, shutdown orchestration.
@@ -155,7 +155,7 @@ Initial targets for the PostgreSQL replay path:
 | Deduplication overhead (10% duplicates) | minimal | **~1 ms avg latency increase** |
 | Restart/resume correctness | 100 % | Verified via duplicate replay tests |
 
-Benchmarks will be added as part of the next milestone. See [docs/benchmarks.md](docs/benchmarks.md) for the benchmark plan.
+See [docs/benchmarks.md](docs/benchmarks.md) for methodology, measured numbers, and reproduction steps.
 
 ## Provider compatibility
 

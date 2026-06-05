@@ -12,6 +12,12 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/maksim-dzhigil/solana-yellowstone-stream-processor"
+homepage = "https://github.com/maksim-dzhigil/solana-yellowstone-stream-processor"
+description = "Reliability-first Rust pipeline for Solana Yellowstone gRPC ingestion into PostgreSQL"
+readme = "README.md"
+keywords = ["solana", "yellowstone", "grpc", "postgres", "pipeline"]
+categories = ["database", "web-programming::http-server"]
+authors = ["Maksim Dzhigil <maksim.dzhigil@gmail.com>"]
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
