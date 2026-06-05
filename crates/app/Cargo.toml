@@ -29,6 +29,7 @@ tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 fastrand = "2"
+prometheus = "0.13"
 
 [lints]
 workspace = true

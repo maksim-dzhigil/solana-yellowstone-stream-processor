@@ -2,9 +2,7 @@ use crate::http::HttpError;
 use solana_yellowstone_storage::cursor::PostgresCursorError;
 use solana_yellowstone_storage::postgres::{PostgresInitError, PostgresWriteError};
 use solana_yellowstone_storage::slots::PostgresSlotStateError;
-use solana_yellowstone_stream::pipeline::PipelineError;
-#[cfg(feature = "yellowstone-live")]
-use solana_yellowstone_stream::pipeline::ProducerPipelineError;
+use solana_yellowstone_stream::pipeline::{PipelineError, ProducerPipelineError};
 use solana_yellowstone_stream::replay::ReplayReadError;
 #[cfg(feature = "yellowstone-live")]
 use solana_yellowstone_stream::yellowstone_live::YellowstoneGrpcError;
@@ -93,6 +91,7 @@ pub enum AppRunError {
         >,
     ),
     Http(HttpError),
+    Metrics(crate::metrics::MetricsInitError),
     #[cfg(not(feature = "yellowstone-live"))]
     YellowstoneRuntimeNotImplemented,
 }
@@ -108,6 +107,7 @@ impl AppRunError {
             Self::Http(_) => 6,
             #[cfg(not(feature = "yellowstone-live"))]
             Self::YellowstoneRuntimeNotImplemented => 7,
+            Self::Metrics(_) => 8,
         }
     }
 }
@@ -123,6 +123,7 @@ impl fmt::Display for AppRunError {
             #[cfg(feature = "yellowstone-live")]
             Self::YellowstonePipeline(err) => write!(f, "yellowstone pipeline error: {err}"),
             Self::Http(err) => write!(f, "http error: {err}"),
+            Self::Metrics(err) => write!(f, "metrics initialization error: {err}"),
             #[cfg(not(feature = "yellowstone-live"))]
             Self::YellowstoneRuntimeNotImplemented => {
                 f.write_str("yellowstone live runtime is not implemented yet")
@@ -142,6 +143,7 @@ impl std::error::Error for AppRunError {
             #[cfg(feature = "yellowstone-live")]
             Self::YellowstonePipeline(err) => Some(err),
             Self::Http(err) => Some(err),
+            Self::Metrics(err) => Some(err),
             #[cfg(not(feature = "yellowstone-live"))]
             Self::YellowstoneRuntimeNotImplemented => None,
         }
@@ -193,6 +195,22 @@ impl From<PipelineError<PostgresWriteError, PostgresCursorError, Infallible>> fo
     }
 }
 
+impl From<ProducerPipelineError<PostgresWriteError, PostgresCursorError, Infallible, Infallible>>
+    for AppRunError
+{
+    fn from(
+        err: ProducerPipelineError<PostgresWriteError, PostgresCursorError, Infallible, Infallible>,
+    ) -> Self {
+        match err {
+            ProducerPipelineError::Pipeline(p) => p.into(),
+            ProducerPipelineError::Producer(i) => match i {},
+            ProducerPipelineError::ProducerJoin(e) => {
+                Self::Pipeline(PipelineError::ProducerJoin(e))
+            }
+        }
+    }
+}
+
 #[cfg(feature = "yellowstone-live")]
 impl
     From<
@@ -219,6 +237,12 @@ impl
 impl From<HttpError> for AppRunError {
     fn from(err: HttpError) -> Self {
         Self::Http(err)
+    }
+}
+
+impl From<crate::metrics::MetricsInitError> for AppRunError {
+    fn from(err: crate::metrics::MetricsInitError) -> Self {
+        Self::Metrics(err)
     }
 }
 

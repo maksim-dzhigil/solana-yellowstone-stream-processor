@@ -88,6 +88,36 @@ The pipeline exposes enough telemetry to detect degradation:
 - `/metrics` — Prometheus counters for events, batches, latency, deduplication, decode errors, reconnects.
 
 If you need alerting, scrape `/metrics` and set thresholds on:
-- `solana_stream_live_producer_staleness_seconds` — live producer has not produced events recently.
+- `solana_stream_seconds_since_last_event` — live producer has not produced events recently.
 - `solana_stream_slot_lag` — observed slot is far behind persisted slot.
-- `solana_stream_yellowstone_reconnects_total` — frequent reconnects indicate provider or network issues.
+- `solana_stream_reconnect_attempts_total` — frequent reconnects indicate provider or network issues.
+
+## Metrics Reference
+
+The following Prometheus metrics are exposed on `/metrics`:
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `solana_stream_ingest_events_total` | counter | `source`, `event_type` | Total ingested events by source (replay / yellowstone) and event type. |
+| `solana_stream_batch_write_latency_seconds` | histogram | `writer` | Batch write latency distribution. |
+| `solana_stream_channel_depth` | gauge | `stream_name` | Current number of events waiting in the bounded channel. |
+| `solana_stream_channel_capacity` | gauge | `stream_name` | Configured channel capacity. |
+| `solana_stream_channel_utilization_ratio` | gauge | `stream_name` | Channel depth divided by capacity. |
+| `solana_stream_last_observed_slot` | gauge | — | Last slot seen from the stream producer. |
+| `solana_stream_last_persisted_slot` | gauge | — | Last slot whose events were successfully written to storage. |
+| `solana_stream_last_finalized_slot` | gauge | — | Last finalized slot tracked by the pipeline. |
+| `solana_stream_slot_lag` | gauge | — | Difference between last observed slot and last persisted slot. |
+| `solana_stream_reconnect_attempts_total` | counter | — | Total Yellowstone reconnect attempts in live mode. |
+| `solana_stream_decode_errors_total` | counter | — | Total malformed Yellowstone updates skipped. |
+
+## SLO Targets
+
+These are initial operational targets for the pipeline. They are not hard guarantees; measure against your own workload and provider.
+
+| SLO | Target | Rationale |
+|---|---|---|
+| p95 event-to-storage latency | < 1 s for processed stream | Batch size 500 and observed ~28 ms average batch write give headroom. |
+| p95 confirmed visibility | < 3 s | Time from Yellowstone confirmed event to persistent storage. |
+| Finalized contiguous cursor lag | < 20 s | `last_contiguous_finalized_slot` should stay close to the chain head. |
+| Duplicate visible events | 0 | Deduplication is handled by stable `event_id` and `ON CONFLICT DO NOTHING`. |
+| Missing finalized slots in replay | 0 | Controlled replay with contiguous slot sequences should not skip slots. |

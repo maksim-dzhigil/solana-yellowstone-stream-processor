@@ -3,8 +3,10 @@ use serde::Serialize;
 use solana_yellowstone_stream::pipeline::PipelineSummary;
 #[cfg(feature = "yellowstone-live")]
 use std::time::{SystemTime, UNIX_EPOCH};
-use std::{fmt, future::Future};
+use std::{fmt, future::Future, sync::Arc};
 use tokio::{net::TcpListener, sync::watch};
+
+use crate::metrics::Metrics;
 
 const METRICS_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
 
@@ -242,6 +244,7 @@ pub type StatusReceiver = watch::Receiver<StatusSnapshot>;
 #[derive(Debug, Clone)]
 struct StatusState {
     status: StatusReceiver,
+    metrics: Arc<Metrics>,
 }
 
 pub fn status_channel(initial: StatusSnapshot) -> (StatusSender, StatusReceiver) {
@@ -271,37 +274,44 @@ impl std::error::Error for HttpError {
     }
 }
 
-pub async fn serve(addr: &str, status: StatusSnapshot) -> Result<(), HttpError> {
+pub async fn serve(
+    addr: &str,
+    status: StatusSnapshot,
+    metrics: Arc<Metrics>,
+) -> Result<(), HttpError> {
     let (_sender, receiver) = status_channel(status);
-    serve_status_updates_until_shutdown(addr, receiver, shutdown_signal()).await
+    serve_status_updates_until_shutdown(addr, receiver, metrics, shutdown_signal()).await
 }
 
 #[cfg(feature = "yellowstone-live")]
 pub async fn serve_updates_until_shutdown(
     addr: &str,
     status: StatusReceiver,
+    metrics: Arc<Metrics>,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<(), HttpError> {
-    serve_status_updates_until_shutdown(addr, status, shutdown).await
+    serve_status_updates_until_shutdown(addr, status, metrics, shutdown).await
 }
 
 #[cfg(test)]
 async fn serve_until_shutdown(
     addr: &str,
     status: StatusSnapshot,
+    metrics: Arc<Metrics>,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<(), HttpError> {
     let (_sender, receiver) = status_channel(status);
-    serve_status_updates_until_shutdown(addr, receiver, shutdown).await
+    serve_status_updates_until_shutdown(addr, receiver, metrics, shutdown).await
 }
 
 async fn serve_status_updates_until_shutdown(
     addr: &str,
     status: StatusReceiver,
+    metrics: Arc<Metrics>,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<(), HttpError> {
     let listener = TcpListener::bind(addr).await.map_err(HttpError::Bind)?;
-    axum::serve(listener, router(status))
+    axum::serve(listener, router(status, metrics))
         .with_graceful_shutdown(shutdown)
         .await
         .map_err(HttpError::Serve)
@@ -314,8 +324,8 @@ async fn shutdown_signal() {
     tracing::info!("shutdown signal received");
 }
 
-fn router(status: StatusReceiver) -> Router {
-    let state = StatusState { status };
+fn router(status: StatusReceiver, metrics: Arc<Metrics>) -> Router {
+    let state = StatusState { status, metrics };
 
     Router::new()
         .route("/healthz", get(healthz))
@@ -341,10 +351,9 @@ async fn status_handler(State(state): State<StatusState>) -> Json<StatusSnapshot
 }
 
 async fn metrics_handler(State(state): State<StatusState>) -> impl IntoResponse {
-    let status = refresh_status(state.status.borrow().clone());
     (
         [(header::CONTENT_TYPE, METRICS_CONTENT_TYPE)],
-        render_metrics(&status),
+        state.metrics.render(),
     )
 }
 
@@ -360,236 +369,6 @@ fn refresh_status(status: StatusSnapshot) -> StatusSnapshot {
     }
 }
 
-fn render_metrics(status: &StatusSnapshot) -> String {
-    let mut output = String::new();
-    let stream_name = escape_label_value(&status.stream_name);
-    let mode = match status.mode {
-        StreamMode::Replay => "replay",
-        #[cfg(feature = "yellowstone-live")]
-        StreamMode::Yellowstone => "yellowstone",
-    };
-    let info_labels = format!(r#"{{stream_name="{stream_name}",mode="{mode}"}}"#);
-
-    push_gauge(
-        &mut output,
-        "solana_stream_info",
-        "Static stream information.",
-        &info_labels,
-        1,
-    );
-
-    for metric in replay_counters(status) {
-        push_counter(&mut output, metric.name, metric.help, metric.value);
-    }
-
-    for metric in cursor_gauges(status) {
-        push_gauge(&mut output, metric.name, metric.help, "", metric.value);
-    }
-
-    #[cfg(feature = "yellowstone-live")]
-    if let Some(live) = &status.live {
-        push_counter(
-            &mut output,
-            "solana_stream_reconnect_attempts_total",
-            "Total Yellowstone reconnect attempts.",
-            live.reconnect_attempts as usize,
-        );
-        push_gauge(
-            &mut output,
-            "solana_stream_producer_up",
-            "Whether the Yellowstone producer is currently running.",
-            "",
-            u64::from(live.producer_state == LiveProducerState::Running),
-        );
-        push_gauge(
-            &mut output,
-            "solana_stream_recovery_gap_risk",
-            "Whether the live recovery state currently has local gap risk.",
-            "",
-            u64::from(live.recovery_state == LiveRecoveryState::GapRisk),
-        );
-        push_counter(
-            &mut output,
-            "solana_stream_recovery_gap_risk_total",
-            "Total live reconnect attempts made without a local from_slot.",
-            live.gap_risk_count as usize,
-        );
-        if let Some(delay_ms) = live.last_reconnect_delay_ms {
-            push_gauge(
-                &mut output,
-                "solana_stream_reconnect_delay_ms",
-                "Last Yellowstone reconnect backoff delay in milliseconds.",
-                "",
-                delay_ms,
-            );
-        }
-        if let Some(slot) = live.last_reconnect_from_slot {
-            push_gauge(
-                &mut output,
-                "solana_stream_last_reconnect_from_slot",
-                "Last local cursor slot used for a Yellowstone reconnect attempt.",
-                "",
-                slot,
-            );
-        }
-        if let Some(seconds) = live.seconds_since_last_event {
-            push_gauge(
-                &mut output,
-                "solana_stream_seconds_since_last_event",
-                "Seconds since the last observed Yellowstone event.",
-                "",
-                seconds,
-            );
-        }
-        if let Some(seconds) = live.seconds_since_last_persisted_batch {
-            push_gauge(
-                &mut output,
-                "solana_stream_seconds_since_last_persisted_batch",
-                "Seconds since the last successfully persisted event batch.",
-                "",
-                seconds,
-            );
-        }
-        if let Some(slot) = live.last_observed_slot {
-            push_gauge(
-                &mut output,
-                "solana_stream_last_observed_slot",
-                "Last observed Yellowstone event slot.",
-                "",
-                slot,
-            );
-        }
-        if let Some(lag) = live.observed_to_persisted_slot_lag {
-            push_gauge(
-                &mut output,
-                "solana_stream_observed_to_persisted_slot_lag",
-                "Difference between the last observed Yellowstone slot and last persisted slot.",
-                "",
-                lag,
-            );
-        }
-        push_counter(
-            &mut output,
-            "solana_stream_decode_errors_total",
-            "Total malformed Yellowstone updates skipped.",
-            live.decode_errors_total as usize,
-        );
-    }
-
-    output
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct UsizeMetric {
-    name: &'static str,
-    help: &'static str,
-    value: usize,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct U64Metric {
-    name: &'static str,
-    help: &'static str,
-    value: u64,
-}
-
-fn replay_counters(status: &StatusSnapshot) -> [UsizeMetric; 6] {
-    [
-        UsizeMetric {
-            name: "solana_stream_events_seen_total",
-            help: "Total replay events seen.",
-            value: status.events_seen,
-        },
-        UsizeMetric {
-            name: "solana_stream_events_skipped_total",
-            help: "Total replay events skipped because of cursor resume.",
-            value: status.events_skipped,
-        },
-        UsizeMetric {
-            name: "solana_stream_batches_written_total",
-            help: "Total batches written to storage.",
-            value: status.batches_written,
-        },
-        UsizeMetric {
-            name: "solana_stream_events_attempted_total",
-            help: "Total events attempted for storage writes.",
-            value: status.events_attempted,
-        },
-        UsizeMetric {
-            name: "solana_stream_events_inserted_total",
-            help: "Total events inserted into storage.",
-            value: status.events_inserted,
-        },
-        UsizeMetric {
-            name: "solana_stream_events_deduplicated_total",
-            help: "Total events deduplicated by storage.",
-            value: status.events_deduplicated,
-        },
-    ]
-}
-
-fn cursor_gauges(status: &StatusSnapshot) -> Vec<U64Metric> {
-    let mut metrics = vec![U64Metric {
-        name: "solana_stream_cursor_available",
-        help: "Whether a persisted cursor slot is available.",
-        value: u64::from(status.last_persisted_slot.is_some()),
-    }];
-
-    if let Some(slot) = status.last_persisted_slot {
-        metrics.push(U64Metric {
-            name: "solana_stream_last_persisted_slot",
-            help: "Last persisted Solana slot.",
-            value: slot,
-        });
-    }
-
-    metrics
-}
-
-fn push_counter(output: &mut String, name: &str, help: &str, value: usize) {
-    push_metric(output, name, help, "counter", "", value);
-}
-
-fn push_gauge<T>(output: &mut String, name: &str, help: &str, labels: &str, value: T)
-where
-    T: std::fmt::Display,
-{
-    push_metric(output, name, help, "gauge", labels, value);
-}
-
-fn push_metric<T>(
-    output: &mut String,
-    name: &str,
-    help: &str,
-    metric_type: &str,
-    labels: &str,
-    value: T,
-) where
-    T: std::fmt::Display,
-{
-    output.push_str("# HELP ");
-    output.push_str(name);
-    output.push(' ');
-    output.push_str(help);
-    output.push_str("\n# TYPE ");
-    output.push_str(name);
-    output.push(' ');
-    output.push_str(metric_type);
-    output.push('\n');
-    output.push_str(name);
-    output.push_str(labels);
-    output.push(' ');
-    output.push_str(&value.to_string());
-    output.push_str("\n\n");
-}
-
-fn escape_label_value(value: &str) -> String {
-    value
-        .replace('\\', r#"\\"#)
-        .replace('\n', r#"\n"#)
-        .replace('"', r#"\""#)
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 struct ReadyResponse {
     ready: bool,
@@ -597,10 +376,7 @@ struct ReadyResponse {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        HealthState, METRICS_CONTENT_TYPE, StatusSnapshot, render_metrics, router,
-        serve_until_shutdown,
-    };
+    use super::{HealthState, METRICS_CONTENT_TYPE, StatusSnapshot, router, serve_until_shutdown};
     use axum::{
         body::{Body, to_bytes},
         http::{Request, StatusCode, header},
@@ -608,7 +384,10 @@ mod tests {
     use serde_json::Value;
     use solana_yellowstone_storage::WriteSummary;
     use solana_yellowstone_stream::pipeline::PipelineSummary;
+    use std::sync::Arc;
     use tower::ServiceExt;
+
+    use crate::metrics::Metrics;
 
     #[test]
     fn builds_status_snapshot_from_pipeline_summary() {
@@ -643,103 +422,63 @@ mod tests {
 
     #[test]
     fn renders_prometheus_text_metrics() {
-        let summary = PipelineSummary {
-            events_seen: 10,
-            events_skipped: 4,
-            batches_written: 2,
-            write_summary: WriteSummary {
-                attempted: 6,
-                inserted: 5,
-                deduplicated: 1,
-                skipped: 0,
-            },
-            last_persisted_slot: Some(42),
-            last_contiguous_finalized_slot: None,
-            last_finalized_slot: None,
-            ..Default::default()
-        };
-        let status = StatusSnapshot::from_pipeline("replay", summary);
+        let metrics = Metrics::new().expect("metrics should initialize");
+        metrics.record_ingest_event("replay", "transaction");
+        metrics.record_ingest_event("replay", "transaction");
+        metrics.record_ingest_event("replay", "slot");
+        metrics.set_channel_state("replay", 5, 100);
+        metrics.observe_batch_write("postgres", 0.028);
+        metrics.set_last_observed_slot(42);
+        metrics.set_slot_lag(3);
 
-        let metrics = render_metrics(&status);
+        let output = metrics.render();
 
-        assert!(metrics.contains("# TYPE solana_stream_events_seen_total counter"));
-        assert!(metrics.contains("solana_stream_info{stream_name=\"replay\",mode=\"replay\"} 1"));
-        assert!(metrics.contains("solana_stream_events_seen_total 10"));
-        assert!(metrics.contains("solana_stream_events_skipped_total 4"));
-        assert!(metrics.contains("solana_stream_events_inserted_total 5"));
-        assert!(metrics.contains("solana_stream_cursor_available 1"));
-        assert!(metrics.contains("solana_stream_last_persisted_slot 42"));
+        assert!(output.contains("# TYPE solana_stream_ingest_events_total counter"));
+        assert!(output.contains(
+            "solana_stream_ingest_events_total{event_type=\"transaction\",source=\"replay\"} 2"
+        ));
+        assert!(output.contains(
+            "solana_stream_ingest_events_total{event_type=\"slot\",source=\"replay\"} 1"
+        ));
+        assert!(output.contains("solana_stream_channel_depth{stream_name=\"replay\"} 5"));
+        assert!(output.contains("solana_stream_channel_capacity{stream_name=\"replay\"} 100"));
+        assert!(
+            output.contains("solana_stream_channel_utilization_ratio{stream_name=\"replay\"} 0.05")
+        );
+        assert!(output.contains("solana_stream_batch_write_latency_seconds_bucket"));
+        assert!(output.contains("solana_stream_last_observed_slot 42"));
+        assert!(output.contains("solana_stream_slot_lag 3"));
     }
 
     #[cfg(feature = "yellowstone-live")]
     #[test]
     fn renders_live_producer_status_metrics() {
-        let summary = PipelineSummary {
-            events_seen: 0,
-            events_skipped: 0,
-            batches_written: 0,
-            write_summary: WriteSummary::default(),
-            last_persisted_slot: Some(40),
-            last_contiguous_finalized_slot: None,
-            last_finalized_slot: None,
-            ..Default::default()
-        };
-        let live = super::LiveProducerStatus::default()
-            .with_reconnecting(
-                3,
-                1_000,
-                "receive",
-                "yellowstone stream receive failed with gRPC status Unavailable",
-            )
-            .with_recovery_reconnect(Some(40))
-            .with_event_observed(42, 10_000)
-            .with_batch_persisted_at(9_000)
-            .refresh_staleness_at(12_500)
-            .refresh_slot_lag(summary.last_persisted_slot);
-        let status =
-            StatusSnapshot::from_pipeline_mode(super::StreamMode::Yellowstone, "live", summary)
-                .with_live(live);
+        let metrics = Metrics::new().expect("metrics should initialize");
+        metrics.inc_reconnect_attempts();
+        metrics.inc_reconnect_attempts();
+        metrics.inc_reconnect_attempts();
+        metrics.inc_decode_errors();
+        metrics.set_last_observed_slot(42);
+        metrics.set_slot_lag(2);
 
-        let metrics = render_metrics(&status);
+        let output = metrics.render();
 
-        assert!(
-            metrics.contains("solana_stream_info{stream_name=\"live\",mode=\"yellowstone\"} 1")
-        );
-        assert!(metrics.contains("solana_stream_reconnect_attempts_total 3"));
-        assert!(metrics.contains("solana_stream_producer_up 0"));
-        assert!(metrics.contains("solana_stream_recovery_gap_risk 0"));
-        assert!(metrics.contains("solana_stream_recovery_gap_risk_total 0"));
-        assert!(metrics.contains("solana_stream_reconnect_delay_ms 1000"));
-        assert!(metrics.contains("solana_stream_last_reconnect_from_slot 40"));
-        assert!(metrics.contains("solana_stream_seconds_since_last_event 2"));
-        assert!(metrics.contains("solana_stream_seconds_since_last_persisted_batch 3"));
-        assert!(metrics.contains("solana_stream_last_observed_slot 42"));
-        assert!(metrics.contains("solana_stream_observed_to_persisted_slot_lag 2"));
+        assert!(output.contains("solana_stream_reconnect_attempts_total 3"));
+        assert!(output.contains("solana_stream_decode_errors_total 1"));
+        assert!(output.contains("solana_stream_last_observed_slot 42"));
+        assert!(output.contains("solana_stream_slot_lag 2"));
     }
 
     #[test]
-    fn omits_last_persisted_slot_when_cursor_is_missing() {
-        let summary = PipelineSummary {
-            events_seen: 0,
-            events_skipped: 0,
-            batches_written: 0,
-            write_summary: WriteSummary::default(),
-            last_persisted_slot: None,
-            last_contiguous_finalized_slot: None,
-            last_finalized_slot: None,
-            ..Default::default()
-        };
-        let status = StatusSnapshot::from_pipeline("replay", summary);
-
-        let metrics = render_metrics(&status);
-
-        assert!(metrics.contains("solana_stream_cursor_available 0"));
-        assert!(!metrics.contains("solana_stream_last_persisted_slot "));
+    fn renders_zero_last_persisted_slot_when_not_set() {
+        let metrics = Metrics::new().expect("metrics should initialize");
+        let output = metrics.render();
+        assert!(output.contains("solana_stream_last_persisted_slot 0"));
     }
 
     #[tokio::test]
     async fn serve_returns_after_shutdown_signal() {
-        serve_until_shutdown("127.0.0.1:0", empty_status(), async {})
+        serve_until_shutdown("127.0.0.1:0", empty_status(), test_metrics(), async {})
             .await
             .expect("server should shut down cleanly");
     }
@@ -808,7 +547,7 @@ mod tests {
         );
         let (_sender, receiver) = super::status_channel(status);
 
-        let response = router(receiver)
+        let response = router(receiver, test_metrics())
             .oneshot(
                 Request::builder()
                     .uri("/status")
@@ -881,29 +620,27 @@ mod tests {
         assert!(
             response
                 .body
-                .contains("# TYPE solana_stream_events_seen_total counter")
+                .contains("# TYPE solana_stream_decode_errors_total counter")
         );
         assert!(
             response
                 .body
-                .contains("solana_stream_info{stream_name=\"contract-test\",mode=\"replay\"} 1")
-        );
-        assert!(response.body.contains("solana_stream_events_seen_total 10"));
-        assert!(
-            response
-                .body
-                .contains("solana_stream_events_inserted_total 5")
+                .contains("# TYPE solana_stream_last_observed_slot gauge")
         );
         assert!(
             response
                 .body
-                .contains("solana_stream_events_deduplicated_total 1")
+                .contains("# TYPE solana_stream_slot_lag gauge")
         );
         assert!(
             response
                 .body
-                .contains("solana_stream_last_persisted_slot 42")
+                .contains("# TYPE solana_stream_reconnect_attempts_total counter")
         );
+    }
+
+    fn test_metrics() -> Arc<Metrics> {
+        Arc::new(Metrics::new().expect("test metrics should initialize"))
     }
 
     fn empty_status() -> StatusSnapshot {
@@ -951,7 +688,7 @@ mod tests {
 
     async fn request(path: &str) -> TestResponse {
         let (_sender, receiver) = super::status_channel(contract_status());
-        let response = router(receiver)
+        let response = router(receiver, test_metrics())
             .oneshot(
                 Request::builder()
                     .uri(path)
@@ -992,20 +729,11 @@ mod tests {
 
     #[test]
     fn escapes_metric_label_values() {
-        let summary = PipelineSummary {
-            events_seen: 0,
-            events_skipped: 0,
-            batches_written: 0,
-            write_summary: WriteSummary::default(),
-            last_persisted_slot: None,
-            last_contiguous_finalized_slot: None,
-            last_finalized_slot: None,
-            ..Default::default()
-        };
-        let status = StatusSnapshot::from_pipeline("replay\\test\nmainnet\"", summary);
+        let metrics = Metrics::new().expect("metrics should initialize");
+        metrics.set_channel_state("replay\\test\nmainnet\"", 1, 10);
 
-        let metrics = render_metrics(&status);
+        let output = metrics.render();
 
-        assert!(metrics.contains(r#"stream_name="replay\\test\nmainnet\"""#));
+        assert!(output.contains(r#"stream_name="replay\\test\nmainnet\"""#));
     }
 }

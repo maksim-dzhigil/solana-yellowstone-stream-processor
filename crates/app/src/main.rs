@@ -3,6 +3,7 @@ mod cli;
 mod config;
 mod error;
 mod http;
+mod metrics;
 mod telemetry;
 
 use clap::Parser;

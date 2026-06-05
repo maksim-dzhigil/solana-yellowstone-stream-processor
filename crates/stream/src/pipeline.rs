@@ -40,12 +40,16 @@ pub struct PipelineSummary {
     pub last_finalized_slot: Option<u64>,
     pub total_batch_write_duration: std::time::Duration,
     pub max_batch_write_duration: std::time::Duration,
+    pub last_batch_write_duration: std::time::Duration,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PipelineActivity {
     pub slot: u64,
     pub events_seen: usize,
+    pub channel_depth: usize,
+    pub channel_capacity: usize,
+    pub event_type: &'static str,
 }
 
 #[derive(Debug)]
@@ -370,6 +374,9 @@ where
         on_activity(PipelineActivity {
             slot: event.slot(),
             events_seen: summary.events_seen,
+            channel_depth: events.len(),
+            channel_capacity: config.channel_capacity,
+            event_type: event.kind().as_str(),
         });
 
         if should_skip_event(&event, config.resume_after_slot, config.use_slot_resume) {
@@ -451,6 +458,7 @@ where
         .await
         .map_err(PipelineError::Write)?;
     let batch_duration = batch_start.elapsed();
+    summary.last_batch_write_duration = batch_duration;
     summary.total_batch_write_duration += batch_duration;
     if batch_duration > summary.max_batch_write_duration {
         summary.max_batch_write_duration = batch_duration;

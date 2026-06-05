@@ -3,16 +3,18 @@ use crate::error::AppRunError;
 use crate::http::{self, StatusSnapshot};
 #[cfg(feature = "yellowstone-live")]
 use crate::http::{LiveProducerStatus, StreamMode};
+use crate::metrics::Metrics;
+use solana_yellowstone_storage::slots::NoopSlotStateStore;
 #[cfg(feature = "yellowstone-live")]
-use solana_yellowstone_storage::slots::{PostgresSlotStateStore, SlotStateStore};
+use solana_yellowstone_storage::slots::PostgresSlotStateStore;
 use solana_yellowstone_storage::{
     CursorStore, cursor::PostgresCursorStore, postgres::PostgresEventWriter,
 };
 #[cfg(feature = "yellowstone-live")]
 use solana_yellowstone_stream::pipeline::PipelineSummary;
-#[cfg(feature = "yellowstone-live")]
-use solana_yellowstone_stream::pipeline::run_event_producer_pipeline_with_progress_and_activity;
-use solana_yellowstone_stream::pipeline::{PipelineConfig, run_replay_pipeline};
+use solana_yellowstone_stream::pipeline::{
+    PipelineConfig, run_event_producer_pipeline_with_progress_and_activity,
+};
 use solana_yellowstone_stream::replay::ReplaySource;
 use solana_yellowstone_stream::source::EventSource;
 #[cfg(feature = "yellowstone-live")]
@@ -20,12 +22,10 @@ use solana_yellowstone_stream::yellowstone_live::{
     YellowstoneGrpcConfig, YellowstoneReconnectConfig,
     run_yellowstone_grpc_producer_with_reconnect_status_and_config,
 };
+use std::sync::Arc;
 #[cfg(feature = "yellowstone-live")]
 use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::atomic::{AtomicU64, Ordering},
     time::{Duration, Instant},
 };
 #[cfg(feature = "yellowstone-live")]
@@ -42,6 +42,8 @@ pub async fn run(config: Config) -> Result<(), AppRunError> {
 }
 
 async fn run_replay(config: Config) -> Result<(), AppRunError> {
+    let metrics = Arc::new(Metrics::new()?);
+
     let replay = ReplaySource::new(config.replay_path.clone());
     info!(replay_path = %config.replay_path, "reading replay events");
     let events = EventSource::read_events(&replay)?;
@@ -80,12 +82,45 @@ async fn run_replay(config: Config) -> Result<(), AppRunError> {
         "running replay pipeline"
     );
 
-    let summary = run_replay_pipeline(
-        events,
+    let metrics_for_progress = metrics.clone();
+    let metrics_for_activity = metrics.clone();
+    let stream_name_activity = config.stream_name.clone();
+    let summary = run_event_producer_pipeline_with_progress_and_activity(
+        move |sender| async move {
+            for event in events {
+                if sender.send(event).await.is_err() {
+                    break;
+                }
+            }
+            Ok::<(), std::convert::Infallible>(())
+        },
         &writer,
         &cursor_store,
+        &NoopSlotStateStore,
         &config.stream_name,
         pipeline_config,
+        move |summary| {
+            if summary.last_batch_write_duration > std::time::Duration::ZERO {
+                metrics_for_progress.observe_batch_write(
+                    "postgres",
+                    summary.last_batch_write_duration.as_secs_f64(),
+                );
+            }
+            if let Some(slot) = summary.last_persisted_slot {
+                metrics_for_progress.set_last_persisted_slot(slot);
+            }
+        },
+        move |activity| {
+            metrics_for_activity.set_channel_state(
+                &stream_name_activity,
+                activity.channel_depth,
+                activity.channel_capacity,
+            );
+            metrics_for_activity.record_ingest_event("replay", activity.event_type);
+            metrics_for_activity.set_last_observed_slot(activity.slot);
+            let persisted = metrics_for_activity.last_persisted_slot_value() as u64;
+            metrics_for_activity.set_slot_lag(activity.slot.saturating_sub(persisted));
+        },
     )
     .await?;
 
@@ -109,7 +144,7 @@ async fn run_replay(config: Config) -> Result<(), AppRunError> {
 
     let status = StatusSnapshot::from_pipeline(config.stream_name.clone(), summary);
     info!(http_addr = %config.http_addr, "serving http endpoints");
-    http::serve(&config.http_addr, status).await?;
+    http::serve(&config.http_addr, status, metrics).await?;
     info!("http server stopped");
 
     Ok(())
@@ -170,6 +205,8 @@ async fn run_yellowstone(config: Config) -> Result<(), AppRunError> {
             "loaded finalized head"
         );
     }
+
+    let metrics = Arc::new(Metrics::new()?);
 
     let yellowstone_reconnect_config = YellowstoneReconnectConfig {
         initial_delay: config.yellowstone_reconnect.initial_delay,
@@ -239,16 +276,24 @@ async fn run_yellowstone(config: Config) -> Result<(), AppRunError> {
     let (shutdown_sender, shutdown_receiver) = watch::channel(false);
     let http_shutdown = wait_for_shutdown(shutdown_receiver.clone());
     info!(http_addr = %config.http_addr, "serving yellowstone http endpoints");
-    let http_server =
-        http::serve_updates_until_shutdown(&config.http_addr, status_receiver, http_shutdown);
+    let http_server = http::serve_updates_until_shutdown(
+        &config.http_addr,
+        status_receiver,
+        metrics.clone(),
+        http_shutdown,
+    );
     let reconnect_status_sender = status_sender.clone();
     let pipeline_status_sender = status_sender.clone();
     let activity_status_sender = status_sender.clone();
+    let metrics_reconnect = metrics.clone();
+    let metrics_progress = metrics.clone();
+    let metrics_activity = metrics.clone();
     let producer_last_contiguous_slot = last_contiguous_finalized_slot.clone();
     let progress_last_contiguous_slot = last_contiguous_finalized_slot.clone();
     let mut last_batches_written = 0;
     let mut last_activity_status_sent = None::<Instant>;
     let decode_errors_for_producer = decode_errors.clone();
+    let stream_name_metrics = config.stream_name.clone();
     let pipeline = run_event_producer_pipeline_with_progress_and_activity(
         move |sender| {
             run_yellowstone_grpc_producer_with_reconnect_status_and_config(
@@ -256,6 +301,7 @@ async fn run_yellowstone(config: Config) -> Result<(), AppRunError> {
                 yellowstone_reconnect_config,
                 sender,
                 move |event| {
+                    metrics_reconnect.inc_reconnect_attempts();
                     let mut status = reconnect_status_sender.borrow().clone();
                     let live = status
                         .live
@@ -286,6 +332,23 @@ async fn run_yellowstone(config: Config) -> Result<(), AppRunError> {
         &config.stream_name,
         pipeline_config,
         move |summary| {
+            if summary.last_batch_write_duration > std::time::Duration::ZERO {
+                metrics_progress.observe_batch_write(
+                    "postgres",
+                    summary.last_batch_write_duration.as_secs_f64(),
+                );
+            }
+            if let Some(slot) = summary.last_persisted_slot {
+                metrics_progress.set_last_persisted_slot(slot);
+            }
+            if let Some(slot) = summary.last_finalized_slot {
+                metrics_progress.set_last_finalized_slot(slot);
+            }
+            let observed = metrics_progress.last_observed_slot_value() as u64;
+            if let Some(persisted) = summary.last_persisted_slot {
+                metrics_progress.set_slot_lag(observed.saturating_sub(persisted));
+            }
+
             let mut live = pipeline_status_sender
                 .borrow()
                 .live
@@ -311,6 +374,16 @@ async fn run_yellowstone(config: Config) -> Result<(), AppRunError> {
             }
         },
         move |activity| {
+            metrics_activity.set_channel_state(
+                &stream_name_metrics,
+                activity.channel_depth,
+                activity.channel_capacity,
+            );
+            metrics_activity.record_ingest_event("yellowstone", activity.event_type);
+            metrics_activity.set_last_observed_slot(activity.slot);
+            let persisted = metrics_activity.last_persisted_slot_value() as u64;
+            metrics_activity.set_slot_lag(activity.slot.saturating_sub(persisted));
+
             let now = Instant::now();
             if last_activity_status_sent
                 .is_some_and(|last| now.duration_since(last) < Duration::from_secs(1))
